@@ -1,6 +1,6 @@
 # @renx/provider
 
-多厂商 LLM 与多模态（文本、图像、语音、视频等）统一客户端，基于注册表与可插拔 Adapter。
+多厂商 LLM 与多模态（文本、图像、语音、视频等）统一客户端，基于注册表与可插拔 Adapter。对话侧图文统一为 **`MessagePart`**（`generateText` / `streamText` 的 **`messages`** 或 **`prompt: string | MessagePart[]`**），详见使用指南。
 
 ## 文档
 
@@ -50,4 +50,4 @@ const { text } = await client.generateText({
 });
 ```
 
-更多预设（仅 MiniMax、三厂商合并等）与多模态用法见 [docs/USAGE.md](./docs/USAGE.md)。
+更多预设（仅 MiniMax、三厂商合并等）、**对话多模态（Vision）**、`buildCanonicalRequest` 与 **`message-parts`** 辅助函数见 [docs/USAGE.md](./docs/USAGE.md)。

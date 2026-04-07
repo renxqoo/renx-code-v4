@@ -1,5 +1,6 @@
 import { LLMError } from "../errors";
 import type { LLMAdapter, AdapterInvokeContext } from "../adapter";
+import { flattenMessagePartsForEcho } from "../message-parts";
 import type {
   CanonicalImageRequest,
   CanonicalImageResult,
@@ -22,7 +23,7 @@ const VENDOR = "echo";
 
 function flatten(req: CanonicalRequest): string {
   return req.messages
-    .map((m) => m.content.map((p) => p.text).join(""))
+    .map((m) => flattenMessagePartsForEcho(m.content))
     .join("\n");
 }
 

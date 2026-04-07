@@ -198,11 +198,41 @@ await client.generateText({
 
 `parseModelRefString("anthropic/claude-3-5-sonnet-20241022")` 仅解析，不注册厂商。
 
-### 3.2 请求体：`prompt` 与 `messages`
+### 3.2 请求体：`prompt`、`messages` 与 `MessagePart`
 
-- 只传 **`prompt`**：会变为单条 user 消息。
-- 传 **`messages`**：使用多轮结构（`CanonicalMessage`：`role` + `content` 数组，文本用 `{ type: "text", text: "..." }`）。
-- 二者都传时，以 **`messages`** 为准（与内部 `buildCanonicalRequest` 行为一致）。
+对话内容统一用 **`MessagePart`** 表示；**`CanonicalMessage`** 为 `{ role, content: MessagePart[] }`，其中 **`role`** 为 `system` | `user` | `assistant`。
+
+**文本段（`TextPart`）**
+
+```typescript
+{ type: "text", text: string }
+```
+
+**图片段（`ImagePart`，任选一种）**
+
+- **URL**：`{ type: "image_url", url: string, detail?: "auto" | "low" | "high" }`（`detail` 主要对应 OpenAI，会按上游语义透传）
+- **Base64**：`{ type: "image_base64", mediaType: string, data: string }`（适配器会转为各厂商需要的 data URL 或 base64 块）
+
+**`prompt`（仅 `generateText` / `streamText`）**
+
+- **`string`**：等价于一条 user 消息，内容为 `[{ type: "text", text: prompt }]`。
+- **`MessagePart[]`**：等价于一条 user 消息，内容为该数组（可图文混排）。**不得传空数组**，否则会抛出 **`INVALID_REQUEST`**。
+
+**`messages`**
+
+- 多轮对话时使用；与 **`prompt` 同时传入**时，以 **`messages`** 为准（与内部 **`buildCanonicalRequest`** 一致）。
+
+**各厂商行为摘要**
+
+| 场景 | 说明 |
+|------|------|
+| **OpenAI**、**MiniMax**（文本走 OpenAI 兼容 Chat） | 将 `MessagePart` 映射为上游 `content` 的 parts 数组（纯文本同样以 parts 形式发送）。 |
+| **Anthropic** | user 可为多块（文本 + 图）；**system** 与 **assistant** 消息中**不能含图片**，否则会 **`INVALID_REQUEST`**。 |
+| **Echo** | 图片在回显中变为 **`[image:url:…]`** / **`[image:base64:…]`** 占位，便于本地与单测。 |
+
+文生图、转写、视频等 API 的 **`prompt` / `text`** 仍为**字符串**（上游协议不是聊天 `content` 块）；**对话类**能力才使用上述 `MessagePart` 模型。
+
+若还需各厂商专有字段，可继续通过 **`providerOptions`**（如 `openai`、`anthropic`、`minimaxi`）合并进请求体。
 
 ### 3.3 常用调用选项（`ClientCallOptionsBase`）
 
@@ -414,6 +444,47 @@ await client.generateText({
 
 MiniMax 图片/语音/视频同样支持 **`providerOptions.minimaxi`** 合并到 JSON body（注意与内置字段冲突时以后写为准）。
 
+### 6.7 对话多模态（文本 + 图片）
+
+单轮可直接用 **`prompt` 传 `MessagePart[]`**；需要 **system** 或多轮时用 **`messages`**。
+
+```typescript
+// 单轮：图文 prompt
+await client.generateText({
+  model: openai("gpt-4o"),
+  prompt: [
+    { type: "text", text: "这张图片里主要是什么？" },
+    { type: "image_url", url: "https://example.com/photo.jpg" },
+  ],
+});
+
+// 多轮或带 system：与 prompt 同一套 content 结构
+await client.generateText({
+  model: anthropic("claude-sonnet-4-20250514"),
+  messages: [
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "请描述附图" },
+        { type: "image_url", url: "https://example.com/screenshot.png" },
+      ],
+    },
+  ],
+});
+```
+
+本地或内网图片可用 **`image_base64`**（`mediaType` 如 `image/png`、`image/jpeg`）：
+
+```typescript
+await client.generateText({
+  model: openai("gpt-4o"),
+  prompt: [
+    { type: "text", text: "读图" },
+    { type: "image_base64", mediaType: "image/png", data: "<base64 不含前缀>" },
+  ],
+});
+```
+
 ---
 
 ## 7. 注册表：组合多个厂商
@@ -466,14 +537,30 @@ const resolveApiKey = createStaticApiKeyResolver({
 
 未实现的方法在 Client 上会收到 **`NOT_IMPLEMENTED`**。
 
+### 8.1 与 Client 对齐的请求构建与映射
+
+以下符号由 **`@renx/provider`** 导出，自定义 Adapter 或中间层可直接复用，避免与内置 OpenAI / Anthropic / Echo 行为分叉：
+
+| 导出 | 用途 |
+|------|------|
+| **`buildCanonicalRequest`**、**`BuildCanonicalRequestInput`** | 将 `prompt` / `messages` 等选项合并为 **`CanonicalRequest`**（与 `createLLMClient` 内部一致）。 |
+| **`openAIContentForMessage`** | 将 **`MessagePart[]`** 转为 OpenAI Chat Completions 的 **`content` parts 数组**。 |
+| **`anthropicContentBlocks`** | 将 **`MessagePart[]`** 转为 Anthropic Messages API 的 **content block 数组**。 |
+| **`flattenTextParts`** | 仅文本段拼接为字符串（例如 system 提取）。 |
+| **`hasNonTextPart`** | 判断消息中是否含非文本段（如校验 assistant 是否含图）。 |
+| **`flattenMessagePartsForEcho`** | Echo 式占位回显（与内置 Echo Adapter 一致）。 |
+
+类型 **`MessagePart`**、**`TextPart`**、**`ImagePart`**、**`CanonicalMessage`** 见包内 **`types`** 导出。
+
 ---
 
 ## 9. 测试与 Echo Adapter
 
 本地或 CI 不调用外网时，可使用 **`createEchoAdapter()`**（`vendorId: "echo"`）：
 
-- 文本会回显 `echo:${内容}`。  
-- 多模态返回占位数据，便于跑通 Client 与注册表逻辑。
+- 文本会回显 **`echo:`** 前缀加上拼好的字符串。  
+- 用户消息里的 **图片段**会变成 **`[image:url:…]`** / **`[image:base64:…]`** 插入该字符串。  
+- 其它多模态能力（文生图、语音等）返回占位数据，便于跑通 Client 与注册表逻辑。
 
 ```typescript
 import { createEchoAdapter, createRegistry, createLLMClient } from "@renx/provider";

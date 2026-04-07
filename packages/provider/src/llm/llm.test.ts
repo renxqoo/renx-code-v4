@@ -53,6 +53,22 @@ describe("buildCanonicalRequest", () => {
 });
 
 describe("createLLMClient with echo adapter", () => {
+  it("generateText with multimodal prompt", async () => {
+    const registry = createRegistry([createEchoAdapter()]);
+    const client = createLLMClient({
+      registry,
+      resolveApiKey: () => "x",
+    });
+    const r = await client.generateText({
+      model: modelRef("echo", "x"),
+      prompt: [
+        { type: "text", text: "see " },
+        { type: "image_url", url: "https://a.com/b.jpg" },
+      ],
+    });
+    expect(r.text).toBe("echo:see [image:url:https://a.com/b.jpg]");
+  });
+
   it("generateText", async () => {
     const registry = createRegistry([createEchoAdapter()]);
     const client = createLLMClient({

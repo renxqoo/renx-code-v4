@@ -24,7 +24,9 @@ export type {
   CanonicalVideoResult,
   MessageRole,
   ModelHandle,
+  MessagePart,
   TextPart,
+  ImagePart,
 } from "./types";
 export {
   LLMError,
@@ -72,3 +74,14 @@ export { modelRef, parseModelRefString } from "./model-ref";
 export { createEchoAdapter } from "./adapters/echo-adapter";
 export { createOpenAIAdapter } from "./adapters/openai-adapter";
 export { createAnthropicAdapter } from "./adapters/anthropic-adapter";
+export {
+  buildCanonicalRequest,
+  type BuildCanonicalRequestInput,
+} from "./build-canonical-request";
+export {
+  anthropicContentBlocks,
+  flattenMessagePartsForEcho,
+  flattenTextParts,
+  hasNonTextPart,
+  openAIContentForMessage,
+} from "./message-parts";

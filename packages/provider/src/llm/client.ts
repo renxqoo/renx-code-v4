@@ -21,6 +21,7 @@ import type {
   CanonicalVideoContentResult,
   CanonicalVideoJob,
   CanonicalVideoResult,
+  MessagePart,
   ModelHandle,
 } from "./types";
 
@@ -36,7 +37,8 @@ export type ClientCallOptionsBase = {
 };
 
 export type GenerateTextOptions = ClientCallOptionsBase & {
-  prompt?: string;
+  /** 与 `messages` 中 `content` 相同模型；字符串等价于单段文本。 */
+  prompt?: string | MessagePart[];
   messages?: CanonicalMessage[];
   temperature?: number;
   maxOutputTokens?: number;

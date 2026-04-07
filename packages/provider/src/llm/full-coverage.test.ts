@@ -383,6 +383,34 @@ describe("buildCanonicalRequest", () => {
     ]);
   });
 
+  it("builds from prompt as MessagePart[] (multimodal)", () => {
+    const r = buildCanonicalRequest({
+      handle: modelRef("o", "m"),
+      prompt: [
+        { type: "text", text: "look" },
+        { type: "image_url", url: "https://ex.com/i.png" },
+      ],
+    });
+    expect(r.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "look" },
+          { type: "image_url", url: "https://ex.com/i.png" },
+        ],
+      },
+    ]);
+  });
+
+  it("throws when prompt is empty MessagePart[]", () => {
+    expect(() =>
+      buildCanonicalRequest({
+        handle: modelRef("o", "m"),
+        prompt: [],
+      }),
+    ).toThrow(LLMError);
+  });
+
   it("throws when neither prompt nor messages", () => {
     expect(() =>
       buildCanonicalRequest({ handle: modelRef("o", "m") }),
@@ -498,6 +526,63 @@ describe("OpenAI adapter", () => {
     expect(body.top_p).toBe(0.9);
     expect(body.stop).toEqual(["STOP"]);
     expect(body.seed).toBe(42);
+  });
+
+  it("generateText uses content parts array when text-only", async () => {
+    const fetchMock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    await adapter.generateText(minimalReq, ctx(fetchMock as typeof fetch));
+    const body = JSON.parse(String(fetchMock.mock.calls[0]![1]?.body)) as {
+      messages: Array<{ role: string; content: unknown }>;
+    };
+    expect(body.messages[0]!.content).toEqual([{ type: "text", text: "hi" }]);
+  });
+
+  it("generateText maps multimodal user content to OpenAI parts array", async () => {
+    const fetchMock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    await adapter.generateText(
+      {
+        modelId: "gpt-4o",
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "describe" },
+              {
+                type: "image_url",
+                url: "https://example.com/a.png",
+                detail: "low",
+              },
+            ],
+          },
+        ],
+        params: {},
+      },
+      ctx(fetchMock as typeof fetch),
+    );
+    const body = JSON.parse(String(fetchMock.mock.calls[0]![1]?.body)) as {
+      messages: Array<{ role: string; content: unknown }>;
+    };
+    expect(body.messages[0]!.content).toEqual([
+      { type: "text", text: "describe" },
+      {
+        type: "image_url",
+        image_url: { url: "https://example.com/a.png", detail: "low" },
+      },
+    ]);
   });
 
   it("maps 401 and 500 and 404 and INVALID_REQUEST", async () => {
@@ -684,11 +769,109 @@ describe("Anthropic adapter", () => {
     const [, init] = fetchMock.mock.calls[0]!;
     const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
     expect(body.system).toBe("sys");
+    expect(
+      (body.messages as Array<{ role: string; content: unknown }>)[0]!
+        .content,
+    ).toEqual([{ type: "text", text: "u" }]);
     expect(body.max_tokens).toBe(100);
     expect(body.temperature).toBe(0.2);
     expect(body.top_p).toBe(0.95);
     expect(body.stop_sequences).toEqual(["STOP"]);
     expect(body.metadata).toEqual({ id: "1" });
+  });
+
+  it("generateText maps user multimodal to Anthropic content blocks", async () => {
+    const fetchMock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          content: [{ type: "text", text: "ok" }],
+          stop_reason: "end_turn",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    await adapter.generateText(
+      {
+        modelId: "claude-3",
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "see" },
+              { type: "image_url", url: "https://example.com/i.jpg" },
+            ],
+          },
+        ],
+        params: {},
+      },
+      {
+        fetch: fetchMock as typeof fetch,
+        apiKey: "k",
+        vendorId: "anthropic",
+      },
+    );
+    const body = JSON.parse(String(fetchMock.mock.calls[0]![1]?.body)) as {
+      messages: Array<{ content: unknown }>;
+    };
+    expect(body.messages[0]!.content).toEqual([
+      { type: "text", text: "see" },
+      {
+        type: "image",
+        source: { type: "url", url: "https://example.com/i.jpg" },
+      },
+    ]);
+  });
+
+  it("rejects system messages with image parts", async () => {
+    await expect(
+      adapter.generateText(
+        {
+          modelId: "c",
+          messages: [
+            {
+              role: "system",
+              content: [
+                { type: "text", text: "s" },
+                { type: "image_url", url: "https://x.com/a.png" },
+              ],
+            },
+            { role: "user", content: [{ type: "text", text: "u" }] },
+          ],
+          params: {},
+        },
+        {
+          fetch: vi.fn() as typeof fetch,
+          apiKey: "k",
+          vendorId: "anthropic",
+        },
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+  });
+
+  it("rejects assistant messages with image parts", async () => {
+    await expect(
+      adapter.generateText(
+        {
+          modelId: "c",
+          messages: [
+            { role: "user", content: [{ type: "text", text: "u" }] },
+            {
+              role: "assistant",
+              content: [
+                { type: "text", text: "a" },
+                { type: "image_url", url: "https://x.com/b.png" },
+              ],
+            },
+          ],
+          params: {},
+        },
+        {
+          fetch: vi.fn() as typeof fetch,
+          apiKey: "k",
+          vendorId: "anthropic",
+        },
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_REQUEST" });
   });
 
   it("throws when only system messages", async () => {

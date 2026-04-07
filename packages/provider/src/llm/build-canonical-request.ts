@@ -1,9 +1,29 @@
 import { LLMError } from "./errors";
-import type { CanonicalMessage, CanonicalRequest, ModelHandle } from "./types";
+import type {
+  CanonicalMessage,
+  CanonicalRequest,
+  MessagePart,
+  ModelHandle,
+} from "./types";
+
+function userContentFromPrompt(prompt: string | MessagePart[]): MessagePart[] {
+  if (typeof prompt === "string") {
+    return [{ type: "text", text: prompt }];
+  }
+  if (prompt.length === 0) {
+    throw new LLMError({
+      code: "INVALID_REQUEST",
+      message: "prompt as MessagePart[] must not be empty",
+      retryable: false,
+    });
+  }
+  return prompt;
+}
 
 export type BuildCanonicalRequestInput = {
   handle: ModelHandle;
-  prompt?: string;
+  /** 与 `messages` 使用同一套 `MessagePart`；纯字符串等价于单段文本。 */
+  prompt?: string | MessagePart[];
   messages?: CanonicalMessage[];
   temperature?: number;
   maxOutputTokens?: number;
@@ -45,7 +65,7 @@ export function buildCanonicalRequest(
       ? [
           {
             role: "user" as const,
-            content: [{ type: "text" as const, text: input.prompt }],
+            content: userContentFromPrompt(input.prompt),
           },
         ]
       : undefined);

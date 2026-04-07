@@ -2,9 +2,15 @@ import { LLMError, RetryableError } from "../errors";
 import type { LLMAdapter, AdapterInvokeContext } from "../adapter";
 import { isFetchAbortError, withOptionalTimeout } from "../abort";
 import { readJsonOrText } from "../http-util";
+import {
+  anthropicContentBlocks,
+  flattenTextParts,
+  hasNonTextPart,
+} from "../message-parts";
 import { readSseEvents } from "../sse";
 import type {
   CanonicalFinishReason,
+  CanonicalMessage,
   CanonicalRequest,
   CanonicalStreamChunk,
   CanonicalTextResult,
@@ -20,21 +26,54 @@ function num(v: unknown): number | undefined {
   return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }
 
-function flattenParts(parts: TextPart[]): string {
-  return parts.map((p) => p.text).join("");
+function messageContentForAnthropic(
+  m: CanonicalMessage,
+  modelId: string,
+): unknown[] {
+  if (m.role === "assistant" && hasNonTextPart(m.content)) {
+    throw new LLMError({
+      code: "INVALID_REQUEST",
+      message:
+        "Anthropic adapter: assistant messages cannot contain image parts",
+      retryable: false,
+      vendor: VENDOR,
+      modelId,
+    });
+  }
+  return anthropicContentBlocks(m.content);
 }
 
 function splitAnthropicMessages(request: CanonicalRequest): {
   system?: string;
-  messages: { role: "user" | "assistant"; content: string }[];
+  messages: { role: "user" | "assistant"; content: unknown[] }[];
 } {
   const systemParts: string[] = [];
-  const messages: { role: "user" | "assistant"; content: string }[] = [];
+  const messages: {
+    role: "user" | "assistant";
+    content: unknown[];
+  }[] = [];
   for (const m of request.messages) {
-    const text = flattenParts(m.content);
-    if (m.role === "system") systemParts.push(text);
-    else if (m.role === "user" || m.role === "assistant") {
-      messages.push({ role: m.role, content: text });
+    if (m.role === "system") {
+      if (hasNonTextPart(m.content)) {
+        throw new LLMError({
+          code: "INVALID_REQUEST",
+          message:
+            "Anthropic adapter: system messages cannot contain image parts",
+          retryable: false,
+          vendor: VENDOR,
+          modelId: request.modelId,
+        });
+      }
+      systemParts.push(
+        flattenTextParts(
+          m.content.filter((p): p is TextPart => p.type === "text"),
+        ),
+      );
+    } else if (m.role === "user" || m.role === "assistant") {
+      messages.push({
+        role: m.role,
+        content: messageContentForAnthropic(m, request.modelId),
+      });
     }
   }
   return {

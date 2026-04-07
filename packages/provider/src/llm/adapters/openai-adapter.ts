@@ -4,13 +4,13 @@ import { isFetchAbortError, withOptionalTimeout } from "../abort";
 import { mapOpenAIHttpError } from "../openai-http-errors";
 import { readSseEvents } from "../sse";
 import { createOpenAIMultimodalMethods } from "../openai-multimodal";
+import { openAIContentForMessage } from "../message-parts";
 import type {
   CanonicalFinishReason,
   CanonicalRequest,
   CanonicalStreamChunk,
   CanonicalTextResult,
   CanonicalUsage,
-  TextPart,
 } from "../types";
 
 const VENDOR = "openai";
@@ -18,10 +18,6 @@ const DEFAULT_BASE = "https://api.openai.com/v1";
 
 function num(v: unknown): number | undefined {
   return typeof v === "number" && Number.isFinite(v) ? v : undefined;
-}
-
-function flattenParts(parts: TextPart[]): string {
-  return parts.map((p) => p.text).join("");
 }
 
 function mapOpenAIFinishReason(r: string): CanonicalFinishReason {
@@ -54,7 +50,7 @@ function buildBody(req: CanonicalRequest, stream: boolean): Record<string, unkno
     model: req.modelId,
     messages: req.messages.map((m) => ({
       role: m.role,
-      content: flattenParts(m.content),
+      content: openAIContentForMessage(m.content),
     })),
     stream,
     ...extra,

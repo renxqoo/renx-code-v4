@@ -2,9 +2,24 @@ export type MessageRole = "system" | "user" | "assistant";
 
 export type TextPart = { type: "text"; text: string };
 
+/** 统一视觉输入：各厂商在 Adapter 内映射为各自 API 形状。 */
+export type ImagePart =
+  | {
+      type: "image_url";
+      url: string;
+      detail?: "auto" | "low" | "high";
+    }
+  | {
+      type: "image_base64";
+      mediaType: string;
+      data: string;
+    };
+
+export type MessagePart = TextPart | ImagePart;
+
 export type CanonicalMessage = {
   role: MessageRole;
-  content: TextPart[];
+  content: MessagePart[];
 };
 
 export type CanonicalGenerateParams = {
