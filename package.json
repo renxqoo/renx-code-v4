@@ -1,0 +1,22 @@
+{
+  "name": "renx-code-v4",
+  "private": true,
+  "scripts": {
+    "lint": "oxlint .",
+    "lint:fix": "oxlint . --fix",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
+    "typecheck": "tsc -b",
+    "build": "pnpm -r run build",
+    "test": "vitest run",
+    "test:bun": "bun run vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "oxfmt": "^0.44.0",
+    "oxlint": "^1.59.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.0"
+  },
+  "packageManager": "pnpm@10.13.1"
+}

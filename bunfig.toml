@@ -1,0 +1,4 @@
+# 依赖由 pnpm 安装；可用 `bun run <script>` 执行根目录 package.json 中的脚本（会走 Vitest / tsc 等）。
+[install]
+# 若在本机用 bun install，可取消下行注释以生成 bun.lock
+# lockfile = true
