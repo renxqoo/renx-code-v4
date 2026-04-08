@@ -1,6 +1,6 @@
-import { MINIMAXI_VENDOR_ID } from "./minimaxi/credentials";
+import type { ModelHandle } from "./types";
 
-/** `openai/gpt-4o-mini` — 等价于字符串，便于与 AI SDK 风格对齐。 */
+/** `openai/gpt-4o-mini` */
 export function openai(modelId: string): string {
   return `openai/${modelId}`;
 }
@@ -10,7 +10,19 @@ export function anthropic(modelId: string): string {
   return `anthropic/${modelId}`;
 }
 
-/** `minimaxi/...` */
-export function minimaxi(modelId: string): string {
-  return `${MINIMAXI_VENDOR_ID}/${modelId}`;
+/** `minimax/...` */
+export function minimax(modelId: string): string;
+export function minimax(modelId: string, providerOptions: Record<string, unknown>): ModelHandle;
+export function minimax(
+  modelId: string,
+  providerOptions?: Record<string, unknown>,
+): string | ModelHandle {
+  if (providerOptions === undefined) {
+    return `minimax/${modelId}`;
+  }
+  return {
+    modelId,
+    vendorId: "minimax",
+    providerOptions,
+  };
 }

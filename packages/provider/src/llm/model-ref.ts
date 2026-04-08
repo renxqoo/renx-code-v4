@@ -18,7 +18,7 @@ export function parseModelRefString(ref: string): ModelHandle {
   if (idx <= 0 || idx === ref.length - 1) {
     throw new LLMError({
       code: "MODEL_NOT_FOUND",
-      message: `Invalid model reference: ${ref}`,
+      message: `Invalid model reference: "${ref}". Expected format: vendorId/modelId (e.g. "openai/gpt-4o")`,
       retryable: false,
     });
   }

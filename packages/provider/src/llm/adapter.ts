@@ -27,14 +27,13 @@ export type AdapterInvokeContext = {
   vendorId: string;
   strictParams?: boolean;
   onWarning?: (message: string) => void;
+  /** Per-vendor endpoint path overrides (merged with adapter defaults). */
+  paths?: Record<string, string>;
 };
 
 export interface LLMAdapter {
   readonly vendorId: string;
-  generateText(
-    request: CanonicalRequest,
-    ctx: AdapterInvokeContext,
-  ): Promise<CanonicalTextResult>;
+  generateText(request: CanonicalRequest, ctx: AdapterInvokeContext): Promise<CanonicalTextResult>;
   streamText(
     request: CanonicalRequest,
     ctx: AdapterInvokeContext,

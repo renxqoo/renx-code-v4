@@ -2,12 +2,7 @@ import { buildCanonicalRequest } from "./build-canonical-request";
 import { LLMError } from "./errors";
 import { normalizeModel } from "./model-ref";
 import type { LLMRegistry } from "./registry";
-import {
-  defaultRetryPolicy,
-  executeWithRetry,
-  mergeRetryPolicy,
-  type RetryPolicy,
-} from "./retry";
+import { defaultRetryPolicy, executeWithRetry, mergeRetryPolicy, type RetryPolicy } from "./retry";
 import type { AdapterInvokeContext } from "./adapter";
 import type {
   CanonicalFinishReason,
@@ -16,13 +11,17 @@ import type {
   CanonicalSpeechResult,
   CanonicalStreamChunk,
   CanonicalTextResult,
+  CanonicalToolCall,
   CanonicalTranscriptionResult,
   CanonicalUsage,
   CanonicalVideoContentResult,
   CanonicalVideoJob,
   CanonicalVideoResult,
+  CanonicalTool,
   MessagePart,
   ModelHandle,
+  ToolChoice,
+  AdapterEndpoints,
 } from "./types";
 
 /** Shared options for text and multimodal calls. */
@@ -40,10 +39,14 @@ export type GenerateTextOptions = ClientCallOptionsBase & {
   /** 与 `messages` 中 `content` 相同模型；字符串等价于单段文本。 */
   prompt?: string | MessagePart[];
   messages?: CanonicalMessage[];
+  /** Shortcut: prepend a system message. */
+  systemPrompt?: string;
   temperature?: number;
   maxOutputTokens?: number;
   topP?: number;
   stopSequences?: string[];
+  tools?: CanonicalTool[];
+  toolChoice?: ToolChoice;
 };
 
 export type StreamTextOptions = GenerateTextOptions;
@@ -90,6 +93,8 @@ export type DownloadVideoOptions = ClientCallOptionsBase & {
 export type StreamTextResult = {
   textStream: AsyncIterable<CanonicalStreamChunk>;
   text: Promise<string>;
+  reasoning: Promise<string>;
+  toolCalls: Promise<CanonicalToolCall[]>;
   usage: Promise<CanonicalUsage | undefined>;
   finishReason: Promise<CanonicalFinishReason>;
 };
@@ -119,17 +124,8 @@ export type LLMHooks = {
     latencyMs: number;
     error?: unknown;
   }) => void;
-  onRetry?: (info: {
-    vendorId: string;
-    modelId: string;
-    attempt: number;
-    error: unknown;
-  }) => void;
-  onWarning?: (info: {
-    vendorId: string;
-    modelId: string;
-    message: string;
-  }) => void;
+  onRetry?: (info: { vendorId: string; modelId: string; attempt: number; error: unknown }) => void;
+  onWarning?: (info: { vendorId: string; modelId: string; message: string }) => void;
   onStreamChunk?: (info: { chunk: CanonicalStreamChunk }) => void | Promise<void>;
 };
 
@@ -143,6 +139,7 @@ export type LLMClientConfig = {
   hooks?: LLMHooks;
   shouldRetry?: (error: LLMError) => boolean;
   baseUrlByVendor?: Record<string, string>;
+  pathsByVendor?: Record<string, Partial<AdapterEndpoints>>;
 };
 
 export type LLMClient = {
@@ -169,11 +166,7 @@ function mergeCallRetry(
   return mergeRetryPolicy(base, partial);
 }
 
-function notImplemented(
-  vendorId: string,
-  capability: string,
-  modelId: string,
-): LLMError {
+function notImplemented(vendorId: string, capability: string, modelId: string): LLMError {
   return new LLMError({
     code: "NOT_IMPLEMENTED",
     message: `${capability} is not implemented for vendor: ${vendorId}`,
@@ -181,6 +174,56 @@ function notImplemented(
     vendor: vendorId,
     modelId,
   });
+}
+
+function assertStrictTextParams(
+  strictParams: boolean | undefined,
+  adapter: ReturnType<LLMRegistry["get"]>,
+  handle: ModelHandle,
+  opts: GenerateTextOptions | StreamTextOptions,
+): void {
+  if (!strictParams) return;
+
+  const capabilities = adapter.getCapabilities(handle.modelId);
+  if (opts.topP !== undefined && !capabilities.supportsTopP) {
+    throw new LLMError({
+      code: "INVALID_REQUEST",
+      message: `${handle.vendorId}/${handle.modelId} does not support topP`,
+      retryable: false,
+      vendor: handle.vendorId,
+      modelId: handle.modelId,
+    });
+  }
+  if (opts.stopSequences !== undefined && !capabilities.supportsStopSequences) {
+    throw new LLMError({
+      code: "INVALID_REQUEST",
+      message: `${handle.vendorId}/${handle.modelId} does not support stopSequences`,
+      retryable: false,
+      vendor: handle.vendorId,
+      modelId: handle.modelId,
+    });
+  }
+  const range = capabilities.maxOutputTokens;
+  if (
+    range &&
+    opts.maxOutputTokens !== undefined &&
+    (opts.maxOutputTokens < range.min || opts.maxOutputTokens > range.max)
+  ) {
+    throw new LLMError({
+      code: "INVALID_REQUEST",
+      message: `${handle.vendorId}/${handle.modelId} maxOutputTokens must be between ${range.min} and ${range.max}`,
+      retryable: false,
+      vendor: handle.vendorId,
+      modelId: handle.modelId,
+    });
+  }
+}
+
+/** Strip `raw` field from a result when `includeRaw` is not set. */
+function omitRaw<T>(result: T, includeRaw: boolean): T {
+  if (includeRaw || !("raw" in (result as object))) return result;
+  const { raw: _, ...rest } = result as object & { raw?: unknown };
+  return rest as T;
 }
 
 export function createLLMClient(config: LLMClientConfig): LLMClient {
@@ -213,8 +256,8 @@ export function createLLMClient(config: LLMClientConfig): LLMClient {
     timeoutMs: opts.timeoutMs ?? config.defaultTimeoutMs,
     vendorId,
     strictParams: config.strictParams,
-    onWarning: (message) =>
-      config.hooks?.onWarning?.({ vendorId, modelId, message }),
+    onWarning: (message) => config.hooks?.onWarning?.({ vendorId, modelId, message }),
+    paths: config.pathsByVendor?.[vendorId] as Record<string, string> | undefined,
   });
 
   const isRetryable = (e: unknown): boolean => {
@@ -222,62 +265,62 @@ export function createLLMClient(config: LLMClientConfig): LLMClient {
     return shouldRetryFn(e);
   };
 
-  async function generateText(
-    opts: GenerateTextOptions,
-  ): Promise<CanonicalTextResult> {
+  // ── Shared invocation logic: resolve model → get adapter → retry → hooks → strip raw ──
+
+  async function invokeAdapter<R>(
+    mode: LLMRequestMode,
+    opts: ClientCallOptionsBase,
+    exec: (
+      adapter: ReturnType<LLMRegistry["get"]>,
+      handle: ModelHandle,
+      ctx: AdapterInvokeContext,
+    ) => Promise<R>,
+  ): Promise<R> {
     const handle = normalizeModel(opts.model);
-    const req = buildCanonicalRequest({ handle, ...opts });
     const adapter = config.registry.get(handle.vendorId);
     const ctx = buildCtx(handle.vendorId, handle.modelId, opts);
     const policy = mergeCallRetry(policyBase, opts);
     const t0 = nowMs();
+
     config.hooks?.onRequestStart?.({
       vendorId: handle.vendorId,
       modelId: handle.modelId,
-      mode: "generate",
+      mode,
       metadata: opts.metadata,
     });
+
     try {
-      const result = await executeWithRetry<CanonicalTextResult>(
-        () => adapter.generateText(req, ctx),
-        {
-          policy,
-          abortSignal: opts.abortSignal,
-          deadlineMs: opts.retry?.deadlineMs,
-          isRetryable,
-          onRetry: ({ attempt, error }) =>
-            config.hooks?.onRetry?.({
-              vendorId: handle.vendorId,
-              modelId: handle.modelId,
-              attempt,
-              error,
-            }),
-        },
-      );
-      const out: CanonicalTextResult =
-        opts.includeRaw === true
-          ? result
-          : {
-              text: result.text,
-              finishReason: result.finishReason,
-              usage: result.usage,
-            };
+      const result = await executeWithRetry<R>(() => exec(adapter, handle, ctx), {
+        policy,
+        abortSignal: opts.abortSignal,
+        deadlineMs: opts.retry?.deadlineMs,
+        isRetryable,
+        onRetry: ({ attempt, error }) =>
+          config.hooks?.onRetry?.({
+            vendorId: handle.vendorId,
+            modelId: handle.modelId,
+            attempt,
+            error,
+          }),
+      });
+
+      const out = omitRaw(result, opts.includeRaw === true);
+
       config.hooks?.onRequestEnd?.({
         vendorId: handle.vendorId,
         modelId: handle.modelId,
-        mode: "generate",
+        mode,
         ok: true,
         latencyMs: nowMs() - t0,
       });
+
       return out;
     } catch (e) {
-      const err = LLMError.isInstance(e)
-        ? e
-        : adapter.mapError(e, { modelId: handle.modelId });
+      const err = LLMError.isInstance(e) ? e : adapter.mapError(e, { modelId: handle.modelId });
       config.hooks?.onRequestEnd?.({
         vendorId: handle.vendorId,
         modelId: handle.modelId,
-        mode: "generate",
+        mode,
         ok: false,
         latencyMs: nowMs() - t0,
         error: err,
@@ -286,15 +329,25 @@ export function createLLMClient(config: LLMClientConfig): LLMClient {
     }
   }
 
-  async function streamText(
-    opts: StreamTextOptions,
-  ): Promise<StreamTextResult> {
+  // ── Public methods ──
+
+  function generateText(opts: GenerateTextOptions): Promise<CanonicalTextResult> {
+    return invokeAdapter("generate", opts, (adapter, handle, ctx) => {
+      assertStrictTextParams(config.strictParams, adapter, handle, opts);
+      const req = buildCanonicalRequest({ handle, ...opts });
+      return adapter.generateText(req, ctx);
+    });
+  }
+
+  async function streamText(opts: StreamTextOptions): Promise<StreamTextResult> {
     const handle = normalizeModel(opts.model);
-    const req = buildCanonicalRequest({ handle, ...opts });
     const adapter = config.registry.get(handle.vendorId);
+    assertStrictTextParams(config.strictParams, adapter, handle, opts);
+    const req = buildCanonicalRequest({ handle, ...opts });
     const ctx = buildCtx(handle.vendorId, handle.modelId, opts);
     const policy = mergeCallRetry(policyBase, opts);
     const t0 = nowMs();
+
     config.hooks?.onRequestStart?.({
       vendorId: handle.vendorId,
       modelId: handle.modelId,
@@ -321,9 +374,7 @@ export function createLLMClient(config: LLMClientConfig): LLMClient {
         },
       );
     } catch (e) {
-      const err = LLMError.isInstance(e)
-        ? e
-        : adapter.mapError(e, { modelId: handle.modelId });
+      const err = LLMError.isInstance(e) ? e : adapter.mapError(e, { modelId: handle.modelId });
       config.hooks?.onRequestEnd?.({
         vendorId: handle.vendorId,
         modelId: handle.modelId,
@@ -341,6 +392,14 @@ export function createLLMClient(config: LLMClientConfig): LLMClient {
       resolveText = resolve;
       rejectText = reject;
     });
+    let resolveReasoning!: (v: string) => void;
+    const reasoningP = new Promise<string>((resolve) => {
+      resolveReasoning = resolve;
+    });
+    let resolveToolCalls!: (v: CanonicalToolCall[]) => void;
+    const toolCallsP = new Promise<CanonicalToolCall[]>((resolve) => {
+      resolveToolCalls = resolve;
+    });
     let resolveUsage!: (v: CanonicalUsage | undefined) => void;
     const usageP = new Promise<CanonicalUsage | undefined>((resolve) => {
       resolveUsage = resolve;
@@ -352,21 +411,39 @@ export function createLLMClient(config: LLMClientConfig): LLMClient {
 
     async function* wrapped(): AsyncGenerator<CanonicalStreamChunk> {
       let acc = "";
+      let reasoningAcc = "";
+      const toolCallMap = new Map<number, CanonicalToolCall>();
       let lastUsage: CanonicalUsage | undefined;
       let lastFinish: CanonicalFinishReason = "other";
+      let settled = false;
       try {
         for await (const c of iterable) {
-          await Promise.resolve(
-            config.hooks?.onStreamChunk?.({ chunk: c }),
-          );
+          await Promise.resolve(config.hooks?.onStreamChunk?.({ chunk: c }));
           if (c.type === "text-delta") acc += c.textDelta;
+          if (c.type === "reasoning-delta") reasoningAcc += c.reasoningDelta;
+          if (c.type === "tool-call-delta") {
+            const existing = toolCallMap.get(c.index);
+            if (existing) {
+              if (c.argumentsDelta) existing.arguments += c.argumentsDelta;
+            } else {
+              toolCallMap.set(c.index, {
+                id: c.id ?? "",
+                name: c.name ?? "",
+                arguments: c.argumentsDelta ?? "",
+              });
+            }
+          }
           if (c.type === "finish") {
             lastFinish = c.finishReason;
             lastUsage = c.usage ?? lastUsage;
           }
           yield c;
         }
+        const toolCallsArr = Array.from(toolCallMap.values());
+        settled = true;
         resolveText(acc);
+        resolveReasoning(reasoningAcc);
+        resolveToolCalls(toolCallsArr);
         resolveUsage(lastUsage);
         resolveFinish(lastFinish);
         config.hooks?.onRequestEnd?.({
@@ -377,10 +454,11 @@ export function createLLMClient(config: LLMClientConfig): LLMClient {
           latencyMs: nowMs() - t0,
         });
       } catch (e) {
-        const err = LLMError.isInstance(e)
-          ? e
-          : adapter.mapError(e, { modelId: handle.modelId });
+        settled = true;
+        const err = LLMError.isInstance(e) ? e : adapter.mapError(e, { modelId: handle.modelId });
         rejectText(err);
+        resolveReasoning("");
+        resolveToolCalls([]);
         resolveUsage(undefined);
         resolveFinish("error");
         config.hooks?.onRequestEnd?.({
@@ -392,417 +470,139 @@ export function createLLMClient(config: LLMClientConfig): LLMClient {
           error: err,
         });
         throw err;
+      } finally {
+        if (!settled) {
+          // Consumer stopped early (break/return) — settle promises & fire hook.
+          resolveText(acc);
+          resolveReasoning(reasoningAcc);
+          resolveToolCalls(Array.from(toolCallMap.values()));
+          resolveUsage(lastUsage);
+          resolveFinish(lastFinish);
+          config.hooks?.onRequestEnd?.({
+            vendorId: handle.vendorId,
+            modelId: handle.modelId,
+            mode: "stream",
+            ok: true,
+            latencyMs: nowMs() - t0,
+          });
+        }
       }
     }
 
     return {
       textStream: wrapped(),
       text: textP,
+      reasoning: reasoningP,
+      toolCalls: toolCallsP,
       usage: usageP,
       finishReason: finishP,
     };
   }
 
-  async function generateImage(
-    opts: GenerateImageOptions,
-  ): Promise<CanonicalImageResult> {
-    const handle = normalizeModel(opts.model);
-    const adapter = config.registry.get(handle.vendorId);
-    const fn = adapter.generateImage;
-    if (!fn) {
-      throw notImplemented(handle.vendorId, "Image generation", handle.modelId);
-    }
-    const ctx = buildCtx(handle.vendorId, handle.modelId, opts);
-    const policy = mergeCallRetry(policyBase, opts);
-    const t0 = nowMs();
-    config.hooks?.onRequestStart?.({
-      vendorId: handle.vendorId,
-      modelId: handle.modelId,
-      mode: "image",
-      metadata: opts.metadata,
-    });
-    try {
-      const result = await executeWithRetry(
-        () =>
-          fn(
-            {
-              modelId: handle.modelId,
-              prompt: opts.prompt,
-              n: opts.n,
-              size: opts.size,
-              quality: opts.quality,
-              responseFormat: opts.responseFormat,
-              providerOptions: {
-                ...handle.providerOptions,
-                ...opts.providerOptions,
-              },
-            },
-            ctx,
-          ),
+  function generateImage(opts: GenerateImageOptions): Promise<CanonicalImageResult> {
+    return invokeAdapter("image", opts, (adapter, handle, ctx) => {
+      const fn = adapter.generateImage;
+      if (!fn) {
+        throw notImplemented(handle.vendorId, "Image generation", handle.modelId);
+      }
+      return fn(
         {
-          policy,
-          abortSignal: opts.abortSignal,
-          deadlineMs: opts.retry?.deadlineMs,
-          isRetryable,
-          onRetry: ({ attempt, error }) =>
-            config.hooks?.onRetry?.({
-              vendorId: handle.vendorId,
-              modelId: handle.modelId,
-              attempt,
-              error,
-            }),
+          modelId: handle.modelId,
+          prompt: opts.prompt,
+          n: opts.n,
+          size: opts.size,
+          quality: opts.quality,
+          responseFormat: opts.responseFormat,
+          providerOptions: {
+            ...handle.providerOptions,
+            ...opts.providerOptions,
+          },
         },
+        ctx,
       );
-      const out: CanonicalImageResult =
-        opts.includeRaw === true
-          ? result
-          : { images: result.images };
-      config.hooks?.onRequestEnd?.({
-        vendorId: handle.vendorId,
-        modelId: handle.modelId,
-        mode: "image",
-        ok: true,
-        latencyMs: nowMs() - t0,
-      });
-      return out;
-    } catch (e) {
-      const err = LLMError.isInstance(e)
-        ? e
-        : adapter.mapError(e, { modelId: handle.modelId });
-      config.hooks?.onRequestEnd?.({
-        vendorId: handle.vendorId,
-        modelId: handle.modelId,
-        mode: "image",
-        ok: false,
-        latencyMs: nowMs() - t0,
-        error: err,
-      });
-      throw err;
-    }
+    });
   }
 
-  async function textToSpeech(
-    opts: TextToSpeechOptions,
-  ): Promise<CanonicalSpeechResult> {
-    const handle = normalizeModel(opts.model);
-    const adapter = config.registry.get(handle.vendorId);
-    const fn = adapter.textToSpeech;
-    if (!fn) {
-      throw notImplemented(handle.vendorId, "Text-to-speech", handle.modelId);
-    }
-    const ctx = buildCtx(handle.vendorId, handle.modelId, opts);
-    const policy = mergeCallRetry(policyBase, opts);
-    const t0 = nowMs();
-    config.hooks?.onRequestStart?.({
-      vendorId: handle.vendorId,
-      modelId: handle.modelId,
-      mode: "speech",
-      metadata: opts.metadata,
-    });
-    try {
-      const result = await executeWithRetry(
-        () =>
-          fn(
-            {
-              modelId: handle.modelId,
-              text: opts.text,
-              voice: opts.voice,
-              format: opts.format,
-              speed: opts.speed,
-              providerOptions: {
-                ...handle.providerOptions,
-                ...opts.providerOptions,
-              },
-            },
-            ctx,
-          ),
+  function textToSpeech(opts: TextToSpeechOptions): Promise<CanonicalSpeechResult> {
+    return invokeAdapter("speech", opts, (adapter, handle, ctx) => {
+      const fn = adapter.textToSpeech;
+      if (!fn) {
+        throw notImplemented(handle.vendorId, "Text-to-speech", handle.modelId);
+      }
+      return fn(
         {
-          policy,
-          abortSignal: opts.abortSignal,
-          deadlineMs: opts.retry?.deadlineMs,
-          isRetryable,
-          onRetry: ({ attempt, error }) =>
-            config.hooks?.onRetry?.({
-              vendorId: handle.vendorId,
-              modelId: handle.modelId,
-              attempt,
-              error,
-            }),
+          modelId: handle.modelId,
+          text: opts.text,
+          voice: opts.voice,
+          format: opts.format,
+          speed: opts.speed,
+          providerOptions: {
+            ...handle.providerOptions,
+            ...opts.providerOptions,
+          },
         },
+        ctx,
       );
-      const out: CanonicalSpeechResult =
-        opts.includeRaw === true ? result : { audio: result.audio, contentType: result.contentType };
-      config.hooks?.onRequestEnd?.({
-        vendorId: handle.vendorId,
-        modelId: handle.modelId,
-        mode: "speech",
-        ok: true,
-        latencyMs: nowMs() - t0,
-      });
-      return out;
-    } catch (e) {
-      const err = LLMError.isInstance(e)
-        ? e
-        : adapter.mapError(e, { modelId: handle.modelId });
-      config.hooks?.onRequestEnd?.({
-        vendorId: handle.vendorId,
-        modelId: handle.modelId,
-        mode: "speech",
-        ok: false,
-        latencyMs: nowMs() - t0,
-        error: err,
-      });
-      throw err;
-    }
+    });
   }
 
-  async function transcribe(
-    opts: TranscribeOptions,
-  ): Promise<CanonicalTranscriptionResult> {
-    const handle = normalizeModel(opts.model);
-    const adapter = config.registry.get(handle.vendorId);
-    const fn = adapter.transcribe;
-    if (!fn) {
-      throw notImplemented(
-        handle.vendorId,
-        "Transcription",
-        handle.modelId,
-      );
-    }
-    const ctx = buildCtx(handle.vendorId, handle.modelId, opts);
-    const policy = mergeCallRetry(policyBase, opts);
-    const t0 = nowMs();
-    config.hooks?.onRequestStart?.({
-      vendorId: handle.vendorId,
-      modelId: handle.modelId,
-      mode: "transcribe",
-      metadata: opts.metadata,
-    });
-    try {
-      const result = await executeWithRetry(
-        () =>
-          fn(
-            {
-              modelId: handle.modelId,
-              audio: opts.audio,
-              filename: opts.filename,
-              language: opts.language,
-              prompt: opts.prompt,
-              responseFormat: opts.responseFormat,
-              providerOptions: {
-                ...handle.providerOptions,
-                ...opts.providerOptions,
-              },
-            },
-            ctx,
-          ),
+  function transcribe(opts: TranscribeOptions): Promise<CanonicalTranscriptionResult> {
+    return invokeAdapter("transcribe", opts, (adapter, handle, ctx) => {
+      const fn = adapter.transcribe;
+      if (!fn) {
+        throw notImplemented(handle.vendorId, "Transcription", handle.modelId);
+      }
+      return fn(
         {
-          policy,
-          abortSignal: opts.abortSignal,
-          deadlineMs: opts.retry?.deadlineMs,
-          isRetryable,
-          onRetry: ({ attempt, error }) =>
-            config.hooks?.onRetry?.({
-              vendorId: handle.vendorId,
-              modelId: handle.modelId,
-              attempt,
-              error,
-            }),
+          modelId: handle.modelId,
+          audio: opts.audio,
+          filename: opts.filename,
+          language: opts.language,
+          prompt: opts.prompt,
+          responseFormat: opts.responseFormat,
+          providerOptions: {
+            ...handle.providerOptions,
+            ...opts.providerOptions,
+          },
         },
+        ctx,
       );
-      const out: CanonicalTranscriptionResult =
-        opts.includeRaw === true
-          ? result
-          : {
-              text: result.text,
-              segments: result.segments,
-              language: result.language,
-              durationSeconds: result.durationSeconds,
-            };
-      config.hooks?.onRequestEnd?.({
-        vendorId: handle.vendorId,
-        modelId: handle.modelId,
-        mode: "transcribe",
-        ok: true,
-        latencyMs: nowMs() - t0,
-      });
-      return out;
-    } catch (e) {
-      const err = LLMError.isInstance(e)
-        ? e
-        : adapter.mapError(e, { modelId: handle.modelId });
-      config.hooks?.onRequestEnd?.({
-        vendorId: handle.vendorId,
-        modelId: handle.modelId,
-        mode: "transcribe",
-        ok: false,
-        latencyMs: nowMs() - t0,
-        error: err,
-      });
-      throw err;
-    }
+    });
   }
 
-  async function generateVideo(
-    opts: GenerateVideoOptions,
-  ): Promise<CanonicalVideoResult> {
-    const handle = normalizeModel(opts.model);
-    const adapter = config.registry.get(handle.vendorId);
-    const fn = adapter.generateVideo;
-    if (!fn) {
-      throw notImplemented(
-        handle.vendorId,
-        "Video generation",
-        handle.modelId,
-      );
-    }
-    const ctx = buildCtx(handle.vendorId, handle.modelId, opts);
-    const policy = mergeCallRetry(policyBase, opts);
-    const t0 = nowMs();
-    config.hooks?.onRequestStart?.({
-      vendorId: handle.vendorId,
-      modelId: handle.modelId,
-      mode: "video",
-      metadata: opts.metadata,
-    });
-    try {
-      const result = await executeWithRetry(
-        () =>
-          fn(
-            {
-              modelId: handle.modelId,
-              prompt: opts.prompt,
-              size: opts.size,
-              seconds: opts.seconds,
-              providerOptions: {
-                ...handle.providerOptions,
-                ...opts.providerOptions,
-              },
-            },
-            ctx,
-          ),
+  function generateVideo(opts: GenerateVideoOptions): Promise<CanonicalVideoResult> {
+    return invokeAdapter("video", opts, (adapter, handle, ctx) => {
+      const fn = adapter.generateVideo;
+      if (!fn) {
+        throw notImplemented(handle.vendorId, "Video generation", handle.modelId);
+      }
+      return fn(
         {
-          policy,
-          abortSignal: opts.abortSignal,
-          deadlineMs: opts.retry?.deadlineMs,
-          isRetryable,
-          onRetry: ({ attempt, error }) =>
-            config.hooks?.onRetry?.({
-              vendorId: handle.vendorId,
-              modelId: handle.modelId,
-              attempt,
-              error,
-            }),
+          modelId: handle.modelId,
+          prompt: opts.prompt,
+          size: opts.size,
+          seconds: opts.seconds,
+          providerOptions: {
+            ...handle.providerOptions,
+            ...opts.providerOptions,
+          },
         },
+        ctx,
       );
-      const out: CanonicalVideoResult =
-        opts.includeRaw === true
-          ? result
-          : {
-              videoId: result.videoId,
-              status: result.status,
-              progress: result.progress,
-            };
-      config.hooks?.onRequestEnd?.({
-        vendorId: handle.vendorId,
-        modelId: handle.modelId,
-        mode: "video",
-        ok: true,
-        latencyMs: nowMs() - t0,
-      });
-      return out;
-    } catch (e) {
-      const err = LLMError.isInstance(e)
-        ? e
-        : adapter.mapError(e, { modelId: handle.modelId });
-      config.hooks?.onRequestEnd?.({
-        vendorId: handle.vendorId,
-        modelId: handle.modelId,
-        mode: "video",
-        ok: false,
-        latencyMs: nowMs() - t0,
-        error: err,
-      });
-      throw err;
-    }
+    });
   }
 
-  async function getVideoJob(
-    opts: VideoJobCallOptions,
-  ): Promise<CanonicalVideoJob> {
-    const handle = normalizeModel(opts.model);
-    const adapter = config.registry.get(handle.vendorId);
-    const fn = adapter.getVideoJob;
-    if (!fn) {
-      throw notImplemented(
-        handle.vendorId,
-        "Video job status",
-        handle.modelId,
-      );
-    }
-    const ctx = buildCtx(handle.vendorId, handle.modelId, opts);
-    const policy = mergeCallRetry(policyBase, opts);
-    const t0 = nowMs();
-    config.hooks?.onRequestStart?.({
-      vendorId: handle.vendorId,
-      modelId: handle.modelId,
-      mode: "video_job",
-      metadata: opts.metadata,
+  function getVideoJob(opts: VideoJobCallOptions): Promise<CanonicalVideoJob> {
+    return invokeAdapter("video_job", opts, (adapter, handle, ctx) => {
+      const fn = adapter.getVideoJob;
+      if (!fn) {
+        throw notImplemented(handle.vendorId, "Video job status", handle.modelId);
+      }
+      return fn({ videoId: opts.videoId }, ctx);
     });
-    try {
-      const result = await executeWithRetry(
-        () => fn({ videoId: opts.videoId }, ctx),
-        {
-          policy,
-          abortSignal: opts.abortSignal,
-          deadlineMs: opts.retry?.deadlineMs,
-          isRetryable,
-          onRetry: ({ attempt, error }) =>
-            config.hooks?.onRetry?.({
-              vendorId: handle.vendorId,
-              modelId: handle.modelId,
-              attempt,
-              error,
-            }),
-        },
-      );
-      const out: CanonicalVideoJob =
-        opts.includeRaw === true
-          ? result
-          : {
-              videoId: result.videoId,
-              status: result.status,
-              progress: result.progress,
-              error: result.error,
-              fileId: result.fileId,
-            };
-      config.hooks?.onRequestEnd?.({
-        vendorId: handle.vendorId,
-        modelId: handle.modelId,
-        mode: "video_job",
-        ok: true,
-        latencyMs: nowMs() - t0,
-      });
-      return out;
-    } catch (e) {
-      const err = LLMError.isInstance(e)
-        ? e
-        : adapter.mapError(e, { modelId: handle.modelId });
-      config.hooks?.onRequestEnd?.({
-        vendorId: handle.vendorId,
-        modelId: handle.modelId,
-        mode: "video_job",
-        ok: false,
-        latencyMs: nowMs() - t0,
-        error: err,
-      });
-      throw err;
-    }
   }
 
-  async function downloadVideo(
-    opts: DownloadVideoOptions,
-  ): Promise<CanonicalVideoContentResult> {
+  function downloadVideo(opts: DownloadVideoOptions): Promise<CanonicalVideoContentResult> {
     if (!opts.videoId && !opts.fileId) {
       throw new LLMError({
         code: "INVALID_REQUEST",
@@ -810,64 +610,13 @@ export function createLLMClient(config: LLMClientConfig): LLMClient {
         retryable: false,
       });
     }
-    const handle = normalizeModel(opts.model);
-    const adapter = config.registry.get(handle.vendorId);
-    const fn = adapter.downloadVideo;
-    if (!fn) {
-      throw notImplemented(
-        handle.vendorId,
-        "Video download",
-        handle.modelId,
-      );
-    }
-    const ctx = buildCtx(handle.vendorId, handle.modelId, opts);
-    const policy = mergeCallRetry(policyBase, opts);
-    const t0 = nowMs();
-    config.hooks?.onRequestStart?.({
-      vendorId: handle.vendorId,
-      modelId: handle.modelId,
-      mode: "video_download",
-      metadata: opts.metadata,
+    return invokeAdapter("video_download", opts, (adapter, handle, ctx) => {
+      const fn = adapter.downloadVideo;
+      if (!fn) {
+        throw notImplemented(handle.vendorId, "Video download", handle.modelId);
+      }
+      return fn({ videoId: opts.videoId, fileId: opts.fileId }, ctx);
     });
-    try {
-      const result = await executeWithRetry(
-        () => fn({ videoId: opts.videoId, fileId: opts.fileId }, ctx),
-        {
-          policy,
-          abortSignal: opts.abortSignal,
-          deadlineMs: opts.retry?.deadlineMs,
-          isRetryable,
-          onRetry: ({ attempt, error }) =>
-            config.hooks?.onRetry?.({
-              vendorId: handle.vendorId,
-              modelId: handle.modelId,
-              attempt,
-              error,
-            }),
-        },
-      );
-      config.hooks?.onRequestEnd?.({
-        vendorId: handle.vendorId,
-        modelId: handle.modelId,
-        mode: "video_download",
-        ok: true,
-        latencyMs: nowMs() - t0,
-      });
-      return result;
-    } catch (e) {
-      const err = LLMError.isInstance(e)
-        ? e
-        : adapter.mapError(e, { modelId: handle.modelId });
-      config.hooks?.onRequestEnd?.({
-        vendorId: handle.vendorId,
-        modelId: handle.modelId,
-        mode: "video_download",
-        ok: false,
-        latencyMs: nowMs() - t0,
-        error: err,
-      });
-      throw err;
-    }
   }
 
   return {

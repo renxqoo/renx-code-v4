@@ -1,4 +1,4 @@
-export type MessageRole = "system" | "user" | "assistant";
+export type MessageRole = "system" | "user" | "assistant" | "tool";
 
 export type TextPart = { type: "text"; text: string };
 
@@ -15,7 +15,22 @@ export type ImagePart =
       data: string;
     };
 
-export type MessagePart = TextPart | ImagePart;
+/** Assistant message 中的 tool call 段。 */
+export type ToolCallPart = {
+  type: "tool_call";
+  id: string;
+  name: string;
+  arguments: string;
+};
+
+/** Tool 执行结果回传（role=tool 消息的 content）。 */
+export type ToolResultPart = {
+  type: "tool_result";
+  toolCallId: string;
+  content: string;
+};
+
+export type MessagePart = TextPart | ImagePart | ToolCallPart | ToolResultPart;
 
 export type CanonicalMessage = {
   role: MessageRole;
@@ -33,6 +48,7 @@ export type CanonicalFinishReason =
   | "stop"
   | "length"
   | "content_filter"
+  | "tool_calls"
   | "error"
   | "other";
 
@@ -42,21 +58,52 @@ export type CanonicalUsage = {
   totalTokens?: number;
 };
 
+// --- Tool calling ---
+
+export type CanonicalTool = {
+  name: string;
+  description?: string;
+  parameters?: Record<string, unknown>;
+};
+
+export type CanonicalToolCall = {
+  id: string;
+  name: string;
+  arguments: string;
+};
+
+export type ToolChoice = "auto" | "none" | "required" | { type: "function"; name: string };
+
+// --- Core request / response ---
+
 export type CanonicalRequest = {
   modelId: string;
   messages: CanonicalMessage[];
   params: CanonicalGenerateParams;
   providerOptions?: Record<string, unknown>;
+  tools?: CanonicalTool[];
+  toolChoice?: ToolChoice;
 };
 
 export type CanonicalTextResult = {
   text: string;
   finishReason: CanonicalFinishReason;
+  toolCalls?: CanonicalToolCall[];
   usage?: CanonicalUsage;
   raw?: unknown;
 };
 
 export type TextDeltaChunk = { type: "text-delta"; textDelta: string };
+
+export type ReasoningDeltaChunk = { type: "reasoning-delta"; reasoningDelta: string };
+
+export type ToolCallDeltaChunk = {
+  type: "tool-call-delta";
+  index: number;
+  id?: string;
+  name?: string;
+  argumentsDelta?: string;
+};
 
 export type FinishChunk = {
   type: "finish";
@@ -64,7 +111,11 @@ export type FinishChunk = {
   usage?: CanonicalUsage;
 };
 
-export type CanonicalStreamChunk = TextDeltaChunk | FinishChunk;
+export type CanonicalStreamChunk =
+  | TextDeltaChunk
+  | ReasoningDeltaChunk
+  | ToolCallDeltaChunk
+  | FinishChunk;
 
 export type ModelHandle = {
   vendorId: string;
@@ -148,12 +199,7 @@ export type CanonicalTranscriptionResult = {
 
 // --- Video generation (async jobs on most providers) ---
 
-export type CanonicalVideoJobStatus =
-  | "queued"
-  | "in_progress"
-  | "completed"
-  | "failed"
-  | "other";
+export type CanonicalVideoJobStatus = "queued" | "in_progress" | "completed" | "failed" | "other";
 
 export type CanonicalVideoRequest = {
   modelId: string;
@@ -193,4 +239,22 @@ export type CanonicalVideoJob = {
 export type CanonicalVideoContentResult = {
   data: Uint8Array;
   contentType?: string;
+};
+
+// --- Adapter endpoint paths ---
+
+export type AdapterEndpoints = {
+  chatCompletions?: string;
+  messages?: string;
+  imageGenerations?: string;
+  imageGeneration?: string;
+  audioSpeech?: string;
+  audioTranscriptions?: string;
+  videos?: string;
+  videoJob?: string;
+  videoDownload?: string;
+  textToAudio?: string;
+  videoGeneration?: string;
+  videoGenerationQuery?: string;
+  fileRetrieve?: string;
 };

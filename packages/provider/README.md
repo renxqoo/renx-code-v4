@@ -1,6 +1,6 @@
 # @renx/provider
 
-多厂商 LLM 与多模态（文本、图像、语音、视频等）统一客户端，基于注册表与可插拔 Adapter。对话侧图文统一为 **`MessagePart`**（`generateText` / `streamText` 的 **`messages`** 或 **`prompt: string | MessagePart[]`**），详见使用指南。
+多厂商 LLM 与多模态（文本、图像、语音、视频等）统一客户端，基于注册表与可插拔 Adapter。支持 **Functional API**（直接 `import { generateText } from "@renx/provider"` 调用）和 **Client API**（`createLLMClient` / `createDefaultLLMClient`）。对话侧图文统一为 **`MessagePart`**（`generateText` / `streamText` 的 **`messages`** 或 **`prompt: string | MessagePart[]`**），详见使用指南。
 
 ## 文档
 
@@ -27,10 +27,11 @@ src/
   index.ts              # 导出 LLM 公共 API
   llm/
     client.ts           # createLLMClient
+    functional.ts       # Functional API（generateText / streamText 等）
     adapters/           # openai、anthropic、echo
-    minimaxi/           # MiniMax 厂商（adapter、credentials、测试）
+    minimax/            # MiniMax 厂商（adapter、credentials、测试）
     registry.ts
-    presets.ts          # 预设注册表组合
+    presets.ts          # 内置厂商注册表工厂
     credentials.ts      # API Key 解析
     …
 docs/
@@ -40,14 +41,25 @@ docs/
 ## 快速示例
 
 ```typescript
+import { generateText, openai } from "@renx/provider";
+
+// 直接调用，无需创建 Client（底层自动维护单例）
+const { text } = await generateText({
+  model: openai("gpt-4o-mini"),
+  prompt: "Hello",
+});
+```
+
+如需显式创建 Client 或自定义配置，可使用 `createDefaultLLMClient` 或 `createLLMClient`：
+
+```typescript
 import { createDefaultLLMClient, openai } from "@renx/provider";
 
 const client = createDefaultLLMClient();
-
 const { text } = await client.generateText({
   model: openai("gpt-4o-mini"),
   prompt: "Hello",
 });
 ```
 
-更多预设（仅 MiniMax、三厂商合并等）、**对话多模态（Vision）**、`buildCanonicalRequest` 与 **`message-parts`** 辅助函数见 [docs/USAGE.md](./docs/USAGE.md)。
+更多多厂商组合方式、**对话多模态（Vision）**、`buildCanonicalRequest` 与 **`message-parts`** 辅助函数见 [docs/USAGE.md](./docs/USAGE.md)。

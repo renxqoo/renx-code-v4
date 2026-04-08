@@ -1,9 +1,12 @@
 import { LLMError } from "./errors";
+import { extractVendorOptions } from "./internal/provider-options";
 import type {
   CanonicalMessage,
   CanonicalRequest,
+  CanonicalTool,
   MessagePart,
   ModelHandle,
+  ToolChoice,
 } from "./types";
 
 function userContentFromPrompt(prompt: string | MessagePart[]): MessagePart[] {
@@ -25,12 +28,19 @@ export type BuildCanonicalRequestInput = {
   /** 与 `messages` 使用同一套 `MessagePart`；纯字符串等价于单段文本。 */
   prompt?: string | MessagePart[];
   messages?: CanonicalMessage[];
+  /** Shortcut: prepend a system message before user/assistant messages. */
+  systemPrompt?: string;
   temperature?: number;
   maxOutputTokens?: number;
   topP?: number;
   stopSequences?: string[];
   providerOptions?: Record<string, unknown>;
+  tools?: CanonicalTool[];
+  toolChoice?: ToolChoice;
 };
+
+/** Known vendor IDs used as providerOptions namespace keys. */
+const VENDOR_NAMESPACES = new Set(["openai", "anthropic", "minimax", "echo"]);
 
 function mergeProviderOptions(
   a?: Record<string, unknown>,
@@ -56,10 +66,8 @@ function mergeProviderOptions(
   return out;
 }
 
-export function buildCanonicalRequest(
-  input: BuildCanonicalRequestInput,
-): CanonicalRequest {
-  const messages =
+export function buildCanonicalRequest(input: BuildCanonicalRequestInput): CanonicalRequest {
+  const userMessages =
     input.messages ??
     (input.prompt !== undefined
       ? [
@@ -70,7 +78,7 @@ export function buildCanonicalRequest(
         ]
       : undefined);
 
-  if (!messages || messages.length === 0) {
+  if (!userMessages || userMessages.length === 0) {
     throw new LLMError({
       code: "INVALID_REQUEST",
       message: "Either messages or prompt is required",
@@ -78,10 +86,12 @@ export function buildCanonicalRequest(
     });
   }
 
-  const providerOptions = mergeProviderOptions(
-    input.handle.providerOptions,
-    input.providerOptions,
-  );
+  const messages: CanonicalMessage[] = input.systemPrompt
+    ? [{ role: "system", content: [{ type: "text", text: input.systemPrompt }] }, ...userMessages]
+    : userMessages;
+
+  const merged = mergeProviderOptions(input.handle.providerOptions, input.providerOptions);
+  const providerOptions = extractVendorOptions(merged, input.handle.vendorId, VENDOR_NAMESPACES);
 
   return {
     modelId: input.handle.modelId,
@@ -93,5 +103,7 @@ export function buildCanonicalRequest(
       stopSequences: input.stopSequences,
     },
     providerOptions,
+    tools: input.tools,
+    toolChoice: input.toolChoice,
   };
 }

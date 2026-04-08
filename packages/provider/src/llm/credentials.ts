@@ -10,7 +10,7 @@ function readProcessEnv(): Record<string, string | undefined> {
   return proc?.env ?? {};
 }
 
-import { MINIMAXI_VENDOR_ID } from "./minimaxi/credentials";
+import { MINIMAX_VENDOR_ID } from "./minimax/credentials";
 
 export function createEnvApiKeyResolver(
   env?: Record<string, string | undefined>,
@@ -19,7 +19,7 @@ export function createEnvApiKeyResolver(
   return (vendorId) => {
     if (vendorId === "openai") return e.OPENAI_API_KEY;
     if (vendorId === "anthropic") return e.ANTHROPIC_API_KEY;
-    if (vendorId === MINIMAXI_VENDOR_ID) return e.MINIMAXI_API_KEY;
+    if (vendorId === MINIMAX_VENDOR_ID) return e.MINIMAX_API_KEY;
     return undefined;
   };
 }

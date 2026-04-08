@@ -1,19 +1,21 @@
-import { LLMError, RetryableError } from "./errors";
-import { readJsonOrText } from "./http-util";
+import { LLMError, RetryableError } from "../errors";
+import { readJsonOrText } from "../internal/util";
 
-const VENDOR = "openai";
-
-export async function mapOpenAIHttpError(
+/**
+ * Generic HTTP-status → LLMError mapping.
+ * Shared by OpenAI, Anthropic, and any vendor with a similar error envelope.
+ */
+export async function mapHttpError(
   res: Response,
   modelId: string,
+  vendor: string,
 ): Promise<LLMError> {
   const payload = await readJsonOrText(res);
   const msg =
     typeof payload === "object" &&
     payload !== null &&
     "error" in payload &&
-    typeof (payload as { error?: { message?: unknown } }).error?.message ===
-      "string"
+    typeof (payload as { error?: { message?: unknown } }).error?.message === "string"
       ? String((payload as { error: { message: string } }).error.message)
       : typeof payload === "string"
         ? payload
@@ -24,7 +26,7 @@ export async function mapOpenAIHttpError(
       code: "UNAUTHORIZED",
       message: msg,
       retryable: false,
-      vendor: VENDOR,
+      vendor,
       modelId,
       httpStatus: status,
     });
@@ -33,7 +35,7 @@ export async function mapOpenAIHttpError(
     return new RetryableError({
       code: "RATE_LIMIT",
       message: msg,
-      vendor: VENDOR,
+      vendor,
       modelId,
       httpStatus: status,
     });
@@ -42,7 +44,7 @@ export async function mapOpenAIHttpError(
     return new RetryableError({
       code: "PROVIDER_ERROR",
       message: msg,
-      vendor: VENDOR,
+      vendor,
       modelId,
       httpStatus: status,
     });
@@ -52,7 +54,7 @@ export async function mapOpenAIHttpError(
       code: "MODEL_NOT_FOUND",
       message: msg,
       retryable: false,
-      vendor: VENDOR,
+      vendor,
       modelId,
       httpStatus: status,
     });
@@ -61,7 +63,7 @@ export async function mapOpenAIHttpError(
     code: "INVALID_REQUEST",
     message: msg,
     retryable: false,
-    vendor: VENDOR,
+    vendor,
     modelId,
     httpStatus: status,
   });

@@ -1,15 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
-import { createAnthropicAdapter } from "./adapters/anthropic-adapter";
-import { createEchoAdapter } from "./adapters/echo-adapter";
-import { createOpenAIAdapter } from "./adapters/openai-adapter";
-import { buildCanonicalRequest } from "./build-canonical-request";
-import { createLLMClient } from "./client";
-import { createDefaultLLMClient } from "./default-client";
-import { openai } from "./vendor-models";
-import { LLMError, RetryableError } from "./errors";
-import { modelRef, parseModelRefString } from "./model-ref";
-import { createRegistry } from "./registry";
-import { defaultRetryPolicy, executeWithRetry } from "./retry";
+import { createAnthropicAdapter } from "../adapters/anthropic-adapter";
+import { createEchoAdapter } from "../adapters/echo-adapter";
+import { createOpenAIAdapter } from "../adapters/openai-adapter";
+import { buildCanonicalRequest } from "../build-canonical-request";
+import { createLLMClient } from "../client";
+import { createDefaultLLMClient } from "../default-client";
+import { openai } from "../vendor-models";
+import { LLMError, RetryableError } from "../errors";
+import { modelRef, parseModelRefString } from "../model-ref";
+import { createRegistry } from "../registry";
+import { defaultRetryPolicy, executeWithRetry } from "../retry";
 
 describe("createDefaultLLMClient + vendor-models", () => {
   it("works with echo registry and static key", async () => {
@@ -44,9 +44,7 @@ describe("buildCanonicalRequest", () => {
     const req = buildCanonicalRequest({
       handle: modelRef("openai", "gpt-4o"),
       prompt: "ignored",
-      messages: [
-        { role: "user", content: [{ type: "text", text: "from messages" }] },
-      ],
+      messages: [{ role: "user", content: [{ type: "text", text: "from messages" }] }],
     });
     expect(req.messages[0]?.content[0]?.text).toBe("from messages");
   });
@@ -198,9 +196,7 @@ describe("OpenAI adapter with mock fetch", () => {
       adapter.generateText(
         {
           modelId: "gpt-4o-mini",
-          messages: [
-            { role: "user", content: [{ type: "text", text: "hi" }] },
-          ],
+          messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
           params: {},
         },
         {

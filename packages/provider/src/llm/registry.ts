@@ -6,7 +6,11 @@ export class LLMRegistry {
 
   register(adapter: LLMAdapter, options?: { overwrite?: boolean }): void {
     if (this.adapters.has(adapter.vendorId) && !options?.overwrite) {
-      throw new Error(`LLM adapter already registered: ${adapter.vendorId}`);
+      throw new LLMError({
+        code: "INVALID_REQUEST",
+        message: `LLM adapter already registered: ${adapter.vendorId}`,
+        retryable: false,
+      });
     }
     this.adapters.set(adapter.vendorId, adapter);
   }

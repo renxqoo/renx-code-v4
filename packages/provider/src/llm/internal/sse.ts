@@ -20,8 +20,7 @@ export async function* readSseEvents(
         const t = line.trimEnd();
         if (!t || t.startsWith(":")) continue;
         if (t.startsWith("event:")) event = t.slice(6).trim();
-        else if (t.startsWith("data:"))
-          dataLines.push(t.slice(5).trimStart());
+        else if (t.startsWith("data:")) dataLines.push(t.slice(5).trimStart());
       }
       if (dataLines.length === 0) continue;
       yield { event, data: dataLines.join("\n") };

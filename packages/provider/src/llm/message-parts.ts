@@ -5,7 +5,7 @@ export function flattenTextParts(parts: TextPart[]): string {
 }
 
 export function hasNonTextPart(parts: MessagePart[]): boolean {
-  return parts.some((p) => p.type !== "text");
+  return parts.some((p) => p.type !== "text" && p.type !== "tool_call" && p.type !== "tool_result");
 }
 
 /** OpenAI Chat Completions：`content` 统一为 parts 数组（含纯文本）。 */
@@ -64,8 +64,7 @@ export function flattenMessagePartsForEcho(parts: MessagePart[]): string {
     .map((p) => {
       if (p.type === "text") return p.text;
       if (p.type === "image_url") return `[image:url:${p.url}]`;
-      if (p.type === "image_base64")
-        return `[image:base64:${p.mediaType}]`;
+      if (p.type === "image_base64") return `[image:base64:${p.mediaType}]`;
       return "";
     })
     .join("");

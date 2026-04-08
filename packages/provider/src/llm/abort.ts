@@ -50,11 +50,9 @@ export function withOptionalTimeout(
   };
 
   parent.addEventListener("abort", () => done(parent.reason), { once: true });
-  timeoutCtrl.signal.addEventListener(
-    "abort",
-    () => done(timeoutCtrl.signal.reason),
-    { once: true },
-  );
+  timeoutCtrl.signal.addEventListener("abort", () => done(timeoutCtrl.signal.reason), {
+    once: true,
+  });
 
   return { signal: merged.signal, dispose: clear };
 }

@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createOpenAIAdapter } from "./adapters/openai-adapter";
-import { createAnthropicAdapter } from "./adapters/anthropic-adapter";
-import { createLLMClient } from "./client";
-import { createEchoAdapter } from "./adapters/echo-adapter";
-import { createRegistry } from "./registry";
-import { defaultRetryPolicy, executeWithRetry } from "./retry";
-import { LLMError } from "./errors";
-import type { AdapterInvokeContext } from "./adapter";
-import type { CanonicalRequest } from "./types";
+import { createOpenAIAdapter } from "../adapters/openai-adapter";
+import { createAnthropicAdapter } from "../adapters/anthropic-adapter";
+import { createLLMClient } from "../client";
+import { createEchoAdapter } from "../adapters/echo-adapter";
+import { createRegistry } from "../registry";
+import { defaultRetryPolicy, executeWithRetry } from "../retry";
+import { LLMError } from "../errors";
+import type { AdapterInvokeContext } from "../adapter";
+import type { CanonicalRequest } from "../types";
 
 const minimalReq: CanonicalRequest = {
   modelId: "gpt-4o-mini",
@@ -17,10 +17,7 @@ const minimalReq: CanonicalRequest = {
 
 /** Like real `fetch`: stays pending until `signal` aborts, then rejects with `signal.reason` (or AbortError). */
 function fetchPendingUntilSignalAborts(): typeof fetch {
-  const impl = (
-    _url: RequestInfo | URL,
-    init?: RequestInit,
-  ): Promise<Response> =>
+  const impl = (_url: RequestInfo | URL, init?: RequestInit): Promise<Response> =>
     new Promise((_resolve, reject) => {
       const signal = init?.signal;
       if (!signal) {
@@ -31,10 +28,7 @@ function fetchPendingUntilSignalAborts(): typeof fetch {
         const r = signal.reason;
         if (LLMError.isInstance(r)) reject(r);
         else if (r !== undefined) reject(r);
-        else
-          reject(
-            new DOMException("The operation was aborted.", "AbortError"),
-          );
+        else reject(new DOMException("The operation was aborted.", "AbortError"));
       };
       if (signal.aborted) {
         onAbort();
@@ -92,37 +86,29 @@ describe("stream timeout semantics (adapter)", () => {
     expect(deltas.join("")).toBe("late");
   });
 
-  it(
-    "times out when fetch does not resolve before timeoutMs (stream open)",
-    async () => {
-      const adapter = createOpenAIAdapter();
-      const fetchMock = vi.fn(fetchPendingUntilSignalAborts());
+  it("times out when fetch does not resolve before timeoutMs (stream open)", async () => {
+    const adapter = createOpenAIAdapter();
+    const fetchMock = vi.fn(fetchPendingUntilSignalAborts());
 
-      const p = adapter.streamText(minimalReq, {
-        ...openaiCtx(fetchMock as typeof fetch),
-        timeoutMs: 40,
-      });
+    const p = adapter.streamText(minimalReq, {
+      ...openaiCtx(fetchMock as typeof fetch),
+      timeoutMs: 40,
+    });
 
-      await expect(p).rejects.toMatchObject({ code: "TIMEOUT" });
-    },
-    10_000,
-  );
+    await expect(p).rejects.toMatchObject({ code: "TIMEOUT" });
+  }, 10_000);
 
-  it(
-    "times out when generateText fetch does not resolve",
-    async () => {
-      const adapter = createOpenAIAdapter();
-      const fetchMock = vi.fn(fetchPendingUntilSignalAborts());
+  it("times out when generateText fetch does not resolve", async () => {
+    const adapter = createOpenAIAdapter();
+    const fetchMock = vi.fn(fetchPendingUntilSignalAborts());
 
-      const p = adapter.generateText(minimalReq, {
-        ...openaiCtx(fetchMock as typeof fetch),
-        timeoutMs: 40,
-      });
+    const p = adapter.generateText(minimalReq, {
+      ...openaiCtx(fetchMock as typeof fetch),
+      timeoutMs: 40,
+    });
 
-      await expect(p).rejects.toMatchObject({ code: "TIMEOUT" });
-    },
-    10_000,
-  );
+    await expect(p).rejects.toMatchObject({ code: "TIMEOUT" });
+  }, 10_000);
 });
 
 describe("OpenAI stream edge cases", () => {
@@ -146,9 +132,7 @@ describe("OpenAI stream edge cases", () => {
     const parts: { type: string; textDelta?: string }[] = [];
     for await (const c of iter) {
       parts.push(
-        c.type === "text-delta"
-          ? { type: c.type, textDelta: c.textDelta }
-          : { type: c.type },
+        c.type === "text-delta" ? { type: c.type, textDelta: c.textDelta } : { type: c.type },
       );
     }
     expect(parts.filter((p) => p.type === "text-delta")).toHaveLength(0);
@@ -242,21 +226,17 @@ describe("Anthropic edge cases", () => {
     expect(out.text).toBe("");
   });
 
-  it(
-    "stream connect timeout same as OpenAI",
-    async () => {
-      const adapter = createAnthropicAdapter();
-      const fetchMock = vi.fn(fetchPendingUntilSignalAborts());
-      const p = adapter.streamText(minimalReq, {
-        fetch: fetchMock as typeof fetch,
-        apiKey: "k",
-        vendorId: "anthropic",
-        timeoutMs: 40,
-      });
-      await expect(p).rejects.toMatchObject({ code: "TIMEOUT" });
-    },
-    10_000,
-  );
+  it("stream connect timeout same as OpenAI", async () => {
+    const adapter = createAnthropicAdapter();
+    const fetchMock = vi.fn(fetchPendingUntilSignalAborts());
+    const p = adapter.streamText(minimalReq, {
+      fetch: fetchMock as typeof fetch,
+      apiKey: "k",
+      vendorId: "anthropic",
+      timeoutMs: 40,
+    });
+    await expect(p).rejects.toMatchObject({ code: "TIMEOUT" });
+  }, 10_000);
 });
 
 describe("SSE / stream failure propagation", () => {
@@ -288,27 +268,23 @@ describe("client stream + user abort (current semantics)", () => {
     vi.useRealTimers();
   });
 
-  it(
-    "abort before streamText connect rejects with ABORTED",
-    async () => {
-      const ac = new AbortController();
-      const fetchMock = vi.fn(fetchPendingUntilSignalAborts());
-      const client = createLLMClient({
-        registry: createRegistry([createOpenAIAdapter()]),
-        resolveApiKey: () => "k",
-        fetch: fetchMock as typeof fetch,
-        defaultTimeoutMs: 60_000,
-      });
-      const p = client.streamText({
-        model: "openai/gpt-4o-mini",
-        prompt: "x",
-        abortSignal: ac.signal,
-      });
-      ac.abort();
-      await expect(p).rejects.toMatchObject({ code: "ABORTED" });
-    },
-    10_000,
-  );
+  it("abort before streamText connect rejects with ABORTED", async () => {
+    const ac = new AbortController();
+    const fetchMock = vi.fn(fetchPendingUntilSignalAborts());
+    const client = createLLMClient({
+      registry: createRegistry([createOpenAIAdapter()]),
+      resolveApiKey: () => "k",
+      fetch: fetchMock as typeof fetch,
+      defaultTimeoutMs: 60_000,
+    });
+    const p = client.streamText({
+      model: "openai/gpt-4o-mini",
+      prompt: "x",
+      abortSignal: ac.signal,
+    });
+    ac.abort();
+    await expect(p).rejects.toMatchObject({ code: "ABORTED" });
+  }, 10_000);
 
   it("after connect, user AbortSignal does not cancel echo stream body (documented gap)", async () => {
     const ac = new AbortController();

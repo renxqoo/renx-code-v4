@@ -22,9 +22,7 @@ import type {
 const VENDOR = "echo";
 
 function flatten(req: CanonicalRequest): string {
-  return req.messages
-    .map((m) => flattenMessagePartsForEcho(m.content))
-    .join("\n");
+  return req.messages.map((m) => flattenMessagePartsForEcho(m.content)).join("\n");
 }
 
 export function createEchoAdapter(): LLMAdapter {

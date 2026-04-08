@@ -1,4 +1,4 @@
-import { LLMError, isRetryableLlmError } from "./errors";
+import { LLMError } from "./errors";
 
 export type RetryPolicy = {
   maxAttempts: number;
@@ -16,18 +16,14 @@ export const defaultRetryPolicy: RetryPolicy = {
   jitterRatio: 0.2,
 };
 
-export function mergeRetryPolicy(
-  base: RetryPolicy,
-  partial?: Partial<RetryPolicy>,
-): RetryPolicy {
+export function mergeRetryPolicy(base: RetryPolicy, partial?: Partial<RetryPolicy>): RetryPolicy {
   if (!partial) return base;
   return { ...base, ...partial };
 }
 
 function computeDelayMs(attemptIndex: number, policy: RetryPolicy): number {
   const base =
-    policy.initialDelayMs *
-    Math.pow(policy.backoffMultiplier, Math.max(0, attemptIndex - 1));
+    policy.initialDelayMs * Math.pow(policy.backoffMultiplier, Math.max(0, attemptIndex - 1));
   const capped = Math.min(base, policy.maxDelayMs);
   const jitter = capped * policy.jitterRatio * (Math.random() * 2 - 1);
   return Math.max(0, Math.round(capped + jitter));
@@ -77,10 +73,7 @@ export async function executeWithRetry<T>(
     });
   }
 
-  const deadlineAt =
-    options.deadlineMs !== undefined
-      ? Date.now() + options.deadlineMs
-      : undefined;
+  const deadlineAt = options.deadlineMs !== undefined ? Date.now() + options.deadlineMs : undefined;
 
   for (let attempt = 1; attempt <= options.policy.maxAttempts; attempt++) {
     if (options.abortSignal?.aborted) {
@@ -118,8 +111,4 @@ export async function executeWithRetry<T>(
   }
 
   throw new Error("@renx/provider: executeWithRetry fell through");
-}
-
-export function defaultIsRetryable(error: unknown): boolean {
-  return isRetryableLlmError(error);
 }

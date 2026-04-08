@@ -1,5 +1,6 @@
 export type {
   AdapterCapabilities,
+  AdapterEndpoints,
   CanonicalFinishReason,
   CanonicalGenerateParams,
   CanonicalImageItem,
@@ -11,6 +12,8 @@ export type {
   CanonicalSpeechResult,
   CanonicalStreamChunk,
   CanonicalTextResult,
+  CanonicalTool,
+  CanonicalToolCall,
   CanonicalTranscriptionRequest,
   CanonicalTranscriptionResult,
   CanonicalTranscriptionSegment,
@@ -27,13 +30,13 @@ export type {
   MessagePart,
   TextPart,
   ImagePart,
+  ToolCallPart,
+  ToolResultPart,
+  ReasoningDeltaChunk,
+  ToolCallDeltaChunk,
+  ToolChoice,
 } from "./types";
-export {
-  LLMError,
-  RetryableError,
-  isRetryableLlmError,
-  type LLMErrorCode,
-} from "./errors";
+export { LLMError, RetryableError, isRetryableLlmError, type LLMErrorCode } from "./errors";
 export { toPublicMessage } from "./public-message";
 export {
   createLLMClient,
@@ -52,32 +55,26 @@ export {
   type TranscribeOptions,
   type VideoJobCallOptions,
 } from "./client";
-export {
-  createDefaultLLMClient,
-  type CreateDefaultLLMClientOptions,
-  type DefaultLLMPreset,
-} from "./default-client";
-export { openai, anthropic, minimaxi } from "./vendor-models";
-export {
-  createStaticApiKeyResolver,
-  createEnvApiKeyResolver,
-} from "./credentials";
-export {
-  createOpenAIAndAnthropicRegistry,
-  createMinimaxiRegistry,
-  createOpenAIAnthropicAndMinimaxiRegistry,
-} from "./presets";
-export { createMinimaxiAdapter, MINIMAXI_VENDOR_ID } from "./minimaxi";
+export { createDefaultLLMClient, type CreateDefaultLLMClientOptions } from "./default-client";
+export { openai, anthropic, minimax } from "./vendor-models";
+export { createStaticApiKeyResolver, createEnvApiKeyResolver } from "./credentials";
+export { createRegistryForVendors } from "./presets";
+export { createMinimaxAdapter, MINIMAX_VENDOR_ID, MINIMAX_DEFAULT_PATHS } from "./minimax";
 export type { AdapterInvokeContext, LLMAdapter } from "./adapter";
 export { LLMRegistry, createRegistry } from "./registry";
 export { modelRef, parseModelRefString } from "./model-ref";
 export { createEchoAdapter } from "./adapters/echo-adapter";
-export { createOpenAIAdapter } from "./adapters/openai-adapter";
-export { createAnthropicAdapter } from "./adapters/anthropic-adapter";
 export {
-  buildCanonicalRequest,
-  type BuildCanonicalRequestInput,
-} from "./build-canonical-request";
+  createOpenAIAdapter,
+  OPENAI_DEFAULT_PATHS,
+  DEFAULT_BASE as OPENAI_DEFAULT_BASE,
+} from "./adapters/openai-adapter";
+export {
+  createAnthropicAdapter,
+  ANTHROPIC_DEFAULT_PATHS,
+  DEFAULT_BASE as ANTHROPIC_DEFAULT_BASE,
+} from "./adapters/anthropic-adapter";
+export { buildCanonicalRequest, type BuildCanonicalRequestInput } from "./build-canonical-request";
 export {
   anthropicContentBlocks,
   flattenMessagePartsForEcho,
@@ -85,3 +82,15 @@ export {
   hasNonTextPart,
   openAIContentForMessage,
 } from "./message-parts";
+export {
+  generateText,
+  streamText,
+  generateImage,
+  textToSpeech,
+  transcribe,
+  generateVideo,
+  getVideoJob,
+  downloadVideo,
+  getDefaultClient,
+  resetDefaultClient,
+} from "./functional";
