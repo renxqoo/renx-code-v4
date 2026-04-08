@@ -12,26 +12,26 @@
 
 ## 1. 文档控制
 
-| 项 | 说明 |
-|----|------|
-| 变更流程 | 破坏性变更须 bump 主版本或提供迁移指南与兼容层 |
-| 术语 | **Canonical**：对内统一模型；**Native**：厂商原始请求/响应 |
-| 范围 | V1：**文本对话**（非流 + SSE 流）；工具调用、多模态、结构化输出在 v2 扩展，**类型与钩子须预留** |
+| 项       | 说明                                                                                            |
+| -------- | ----------------------------------------------------------------------------------------------- |
+| 变更流程 | 破坏性变更须 bump 主版本或提供迁移指南与兼容层                                                  |
+| 术语     | **Canonical**：对内统一模型；**Native**：厂商原始请求/响应                                      |
+| 范围     | V1：**文本对话**（非流 + SSE 流）；工具调用、多模态、结构化输出在 v2 扩展，**类型与钩子须预留** |
 
 ---
 
 ## 1.1 V1 完整企业级 SDK 模块交付范围（强制）
 
-| 模块 | 交付物 |
-|------|--------|
-| 核心 | `createLLMClient`、`generateText`、`streamText`、`LLMRegistry`、`modelRef` / 字符串 `vendor/model` |
-| Canonical | 消息 parts、生成参数、`finishReason`、`usage`、流式 chunk 类型 |
-| 错误 | `LLMError`、`RetryableError`、稳定 `code`、`toPublicMessage`、厂商错误映射（OpenAI / Anthropic） |
-| 重试 | `maxAttempts`、指数退避 + jitter、`shouldRetry` 覆盖、`AbortSignal`、单次 `timeoutMs`、可选整次 `deadlineMs` |
-| 流式语义 | 重试仅覆盖「建立流式连接 / 拿到 body 之前」；连接建立后中途失败不重试 |
-| 适配器 | **OpenAI**（Chat Completions）、**Anthropic**（Messages），基于可注入 `fetch`，无厂商官方 SDK 硬依赖 |
-| 测试 | Echo 适配器、单测（重试、注册表、请求构建、Mock `fetch` 契约） |
-| 导出 | `@renx/provider` 根入口导出 LLM API；可选子路径 `./llm` |
+| 模块      | 交付物                                                                                                       |
+| --------- | ------------------------------------------------------------------------------------------------------------ |
+| 核心      | `createLLMClient`、`generateText`、`streamText`、`LLMRegistry`、`modelRef` / 字符串 `vendor/model`           |
+| Canonical | 消息 parts、生成参数、`finishReason`、`usage`、流式 chunk 类型                                               |
+| 错误      | `LLMError`、`RetryableError`、稳定 `code`、`toPublicMessage`、厂商错误映射（OpenAI / Anthropic）             |
+| 重试      | `maxAttempts`、指数退避 + jitter、`shouldRetry` 覆盖、`AbortSignal`、单次 `timeoutMs`、可选整次 `deadlineMs` |
+| 流式语义  | 重试仅覆盖「建立流式连接 / 拿到 body 之前」；连接建立后中途失败不重试                                        |
+| 适配器    | **OpenAI**（Chat Completions）、**Anthropic**（Messages），基于可注入 `fetch`，无厂商官方 SDK 硬依赖         |
+| 测试      | Echo 适配器、单测（重试、注册表、请求构建、Mock `fetch` 契约）                                               |
+| 导出      | `@renx/provider` 根入口导出 LLM API；可选子路径 `./llm`                                                      |
 
 ---
 
@@ -115,7 +115,7 @@
 ### 5.1 消息
 
 - `role`: `system` | `user` | `assistant`
-- `content`: **parts** 数组，首版至少 ` { type: 'text', text: string } `
+- `content`: **parts** 数组，首版至少 `{ type: 'text', text: string }`
 - **顺序规则**：按数组顺序即为对话顺序；多条 `system` 的合并策略由 **Adapter 文档**说明（如合并为一条或按厂商要求重组）。
 
 ### 5.2 生成参数
@@ -192,21 +192,21 @@ providerOptions?: {
 
 ### 8.2 标准 `code` 清单（须与监控面板一致）
 
-| code | 默认 retryable | 说明 |
-|------|----------------|------|
-| `UNAUTHORIZED` | 否 | 密钥/权限 |
-| `RATE_LIMIT` | 是 | 429 及厂商等价 |
-| `QUOTA_EXCEEDED` | 否* | 与限流区分；*若业务可申诉可配置为可重试 |
-| `INVALID_REQUEST` | 否 | 参数、格式 |
-| `MODEL_NOT_FOUND` | 否 | |
-| `MODEL_NOT_AVAILABLE` | 可配置 | 临时不可用 |
-| `TIMEOUT` | 是 | |
-| `NETWORK` | 是 | DNS、连接重置等 |
-| `PROVIDER_ERROR` | 可配置 | 5xx |
-| `INVALID_RESPONSE` | 否 | 解析失败 |
-| `CONTENT_FILTER` | 否 | 安全策略拦截 |
-| `ABORTED` | 否 | 用户取消 |
-| `UNKNOWN` | 否 | 兜底 |
+| code                  | 默认 retryable | 说明                                     |
+| --------------------- | -------------- | ---------------------------------------- |
+| `UNAUTHORIZED`        | 否             | 密钥/权限                                |
+| `RATE_LIMIT`          | 是             | 429 及厂商等价                           |
+| `QUOTA_EXCEEDED`      | 否\*           | 与限流区分；\*若业务可申诉可配置为可重试 |
+| `INVALID_REQUEST`     | 否             | 参数、格式                               |
+| `MODEL_NOT_FOUND`     | 否             |                                          |
+| `MODEL_NOT_AVAILABLE` | 可配置         | 临时不可用                               |
+| `TIMEOUT`             | 是             |                                          |
+| `NETWORK`             | 是             | DNS、连接重置等                          |
+| `PROVIDER_ERROR`      | 可配置         | 5xx                                      |
+| `INVALID_RESPONSE`    | 否             | 解析失败                                 |
+| `CONTENT_FILTER`      | 否             | 安全策略拦截                             |
+| `ABORTED`             | 否             | 用户取消                                 |
+| `UNKNOWN`             | 否             | 兜底                                     |
 
 ### 8.3 厂商自定义可重试
 
@@ -290,12 +290,12 @@ providerOptions?: {
 
 ## 14. 测试策略
 
-| 层级 | 内容 |
-|------|------|
-| 单元 | 错误映射表、`shouldRetry`、模型 ID 解析、Canonical 合并工具 |
+| 层级 | 内容                                                                                      |
+| ---- | ----------------------------------------------------------------------------------------- |
+| 单元 | 错误映射表、`shouldRetry`、模型 ID 解析、Canonical 合并工具                               |
 | 契约 | 每个 Adapter：给定 Canonical 输入，Mock HTTP，断言 Native 请求快照与 Canonical 输出不变量 |
-| 集成 | 可选真 API（夜间流水线 + 密钥）；默认录播（golden file） |
-| 负载 | 可选：流式背压与并发压测（非阻塞首版） |
+| 集成 | 可选真 API（夜间流水线 + 密钥）；默认录播（golden file）                                  |
+| 负载 | 可选：流式背压与并发压测（非阻塞首版）                                                    |
 
 覆盖率目标：核心调度与错误路径 **≥ 85%**（与仓库测试规范对齐时可调整）。
 
@@ -342,9 +342,9 @@ providerOptions?: {
 
 ## 19. 修订历史
 
-| 版本 | 说明 |
-|------|------|
-| 1.1 | 明确 V1 为**完整企业级 SDK**交付范围；`streamText` 返回 `Promise<AsyncIterable<...>>` 以固定重试边界 |
-| 1.0 | 初版规格 |
+| 版本 | 说明                                                                                                 |
+| ---- | ---------------------------------------------------------------------------------------------------- |
+| 1.1  | 明确 V1 为**完整企业级 SDK**交付范围；`streamText` 返回 `Promise<AsyncIterable<...>>` 以固定重试边界 |
+| 1.0  | 初版规格                                                                                             |
 
 **文档结束。** 实现时若偏离本文档，须在 PR 中说明理由并同步修订本规格版本号与修订历史。

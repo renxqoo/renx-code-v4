@@ -1,0 +1,26 @@
+{
+  "name": "@renx/examples",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "demo:generate-text": "tsx src/provider/01-generate-text.ts",
+    "demo:stream-text": "tsx src/provider/02-stream-text.ts",
+    "demo:multi-vendor": "tsx src/provider/03-multi-vendor.ts",
+    "demo:generate-image": "tsx src/provider/04-generate-image.ts",
+    "demo:tts": "tsx src/provider/05-text-to-speech.ts",
+    "demo:error-handling": "tsx src/provider/06-error-handling.ts",
+    "demo:video": "tsx src/provider/07-video-pipeline.ts",
+    "demo:tool-calling": "tsx src/provider/08-tool-calling.ts",
+    "demo:tool-calling-stream": "tsx src/provider/09-tool-calling-stream.ts",
+    "demo:reasoning": "tsx src/provider/10-reasoning.ts",
+    "demo:minimax-tts": "tsx src/provider/11-minimax-tts.ts"
+  },
+  "dependencies": {
+    "@renx/provider": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.2",
+    "tsx": "^4.19.0"
+  }
+}

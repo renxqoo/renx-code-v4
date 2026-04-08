@@ -13,6 +13,9 @@
     "test:bun": "bun run vitest run",
     "test:watch": "vitest"
   },
+  "dependencies": {
+    "@types/node": "^25.5.2"
+  },
   "devDependencies": {
     "@vitest/coverage-v8": "3.2.4",
     "oxfmt": "^0.44.0",

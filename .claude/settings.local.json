@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc:*)",
+      "Bash(ls:*)",
+      "Bash(npm run typecheck:*)",
+      "Bash(npx --yes tsc --version:*)",
+      "Bash(pnpm install:*)",
+      "Bash(pnpm run typecheck:*)",
+      "Bash(pnpm --filter @renx/provider test:coverage:*)",
+      "Bash(pnpm --filter @renx/provider vitest run:*)",
+      "Bash(npx vitest run)",
+      "Bash(npx vitest run:*)",
+      "Bash(tree:*)",
+      "Bash(find:*)",
+      "Bash(pnpm add:*)",
+      "Bash(pnpm --filter @renx/provider exec vitest run:*)",
+      "Bash(pnpm -r run build:*)",
+      "Bash(pnpm --filter @renx/provider test)",
+      "Bash(pnpm test:*)",
+      "Bash(pnpm --filter @renx/provider run test:*)",
+      "Bash(sort:*)",
+      "Bash(git checkout:*)",
+      "Bash(git -C /Users/wrr/work/renx-code-v4 show :packages/provider/src/llm/full-coverage.test.ts)",
+      "Bash(git -C /Users/wrr/work/renx-code-v4 diff HEAD -- packages/provider/src/llm/full-coverage.test.ts)",
+      "Bash(grep:*)",
+      "Bash(python3:*)",
+      "Bash(git mv:*)",
+      "Bash(pnpm typecheck:*)",
+      "Bash(pnpm lint:*)",
+      "Bash(pnpm format:check)",
+      "Bash(pnpm format)"
+    ]
+  },
+  "enabledMcpjsonServers": ["sequential-thinking", "context7", "tavily", "shadcn"]
+}
