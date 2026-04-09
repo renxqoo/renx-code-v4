@@ -8,6 +8,8 @@ import type { AdapterInvokeContext } from "./adapter";
 export type AdapterFetchOptions = {
   /** HTTP method (default: `"POST"`). */
   method?: "GET" | "POST";
+  /** Authentication headers chosen by the adapter (for example Bearer or x-api-key). */
+  authHeaders?: Record<string, string>;
   /**
    * JSON body — when set, `Content-Type: application/json` is added automatically
    * and the value is serialised with `JSON.stringify`.
@@ -19,11 +21,15 @@ export type AdapterFetchOptions = {
   body?: BodyInit;
   /** URL query parameters appended as `?key=value&…`. */
   params?: Record<string, string>;
-  /** Extra headers (`Content-Type` and `Authorization` are set automatically). */
+  /** Extra headers merged after `authHeaders`; `Content-Type` is added automatically for JSON. */
   headers?: Record<string, string>;
   /** Model ID included in error context. */
   modelId: string;
 };
+
+export function bearerAuthHeaders(apiKey: string): Record<string, string> {
+  return { Authorization: `Bearer ${apiKey}` };
+}
 
 /**
  * Shared request skeleton used by every adapter method.
@@ -61,7 +67,7 @@ export async function withAdapterFetch<T>(
   const { signal, dispose } = withOptionalTimeout(ctx.abortSignal, ctx.timeoutMs);
   try {
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${ctx.apiKey}`,
+      ...options.authHeaders,
       ...options.headers,
     };
     let reqBody: BodyInit | undefined;

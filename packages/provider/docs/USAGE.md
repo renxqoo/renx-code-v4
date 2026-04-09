@@ -383,8 +383,8 @@ await client.generateText({
 | 字段              | 作用                                                                         |
 | ----------------- | ---------------------------------------------------------------------------- |
 | `model`           | `string` 或 `ModelHandle`                                                    |
-| `abortSignal`     | 取消请求（与厂商 `fetch` + 内部超时信号合并）                                |
-| `timeoutMs`       | 单次调用超时（毫秒）；未设置则用 `defaultTimeoutMs`                          |
+| `abortSignal`     | 取消请求（与厂商 `fetch` + 内部超时信号合并；`streamText` 在建连后继续消费时也生效） |
+| `timeoutMs`       | 单次调用超时（毫秒）；`streamText` 建连时生效，建连后转为空闲超时，持续有 chunk 则不会因总耗时超时 |
 | `retry`           | 覆盖重试策略片段，并可设 `deadlineMs` 总期限                                 |
 | `metadata`        | 仅供 `hooks` 观测，不参与上游协议                                            |
 | `providerOptions` | 平铺合并到请求体；也可用厂商命名空间 key 指定目标厂商（详见 3.2 节）         |
@@ -920,7 +920,7 @@ pnpm run build
 A：`model` 前缀的厂商未在 `registry` 中注册，或拼写与 Adapter 的 `vendorId` 不一致（OpenAI 为 `openai`，MiniMax 为 `minimax`）。
 
 **Q：流式很慢或一直不结束**  
-A：确认消费了 `textStream`；检查上游是否真正关闭连接；可适当设置 `timeoutMs`。
+A：确认消费了 `textStream`；检查上游是否真正关闭连接；可设置 `timeoutMs` 作为建连超时与流式空闲超时。若上游持续输出 chunk，即使总耗时超过 `timeoutMs` 也不会被判超时。
 
 **Q：MiniMax 下载视频失败**  
 A：确认 `getVideoJob` 状态已为 **`completed`**（映射后），且使用返回的 **`fileId`** 调用 `downloadVideo`，而不是仅用 `task_id`。

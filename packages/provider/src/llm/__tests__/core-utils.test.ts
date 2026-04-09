@@ -434,6 +434,12 @@ describe("createRegistryForVendors", () => {
   });
 
   it("throws on unknown vendor", () => {
-    expect(() => createRegistryForVendors(["bogus"])).toThrow(/Unknown vendor/);
+    expect(() => createRegistryForVendors(["bogus"])).toThrowError(
+      expect.objectContaining({
+        code: "MODEL_NOT_FOUND",
+        vendor: "bogus",
+        message: expect.stringMatching(/Unknown vendor/),
+      }),
+    );
   });
 });

@@ -8,7 +8,7 @@ import { streamText } from "@renx/provider";
 // providerOptions: { minimax: { reasoning_split: true } }
 // minimax vendor needs vendors: ["openai", "anthropic", "minimax"] or vendors: ["minimax"]
 const clientOptions = {
-  vendors: ["openai", "anthropic", "minimax"] as const,
+  vendors: ["openai", "anthropic", "minimax"],
   apiKeys: { minimax: process.env.MINIMAX_API_KEY },
 };
 // console.log( process.env);

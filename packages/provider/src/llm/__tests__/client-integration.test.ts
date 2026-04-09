@@ -138,6 +138,47 @@ describe("createLLMClient integration", () => {
     ).rejects.toMatchObject({ code: "UNKNOWN" });
   });
 
+  it("strictParams rejects streamText when adapter does not support streaming", async () => {
+    const nonStreamingAdapter: LLMAdapter = {
+      vendorId: "nostream",
+      async generateText() {
+        return { text: "ok", finishReason: "stop" };
+      },
+      async streamText() {
+        async function* gen(): AsyncGenerator<CanonicalStreamChunk> {
+          yield { type: "finish", finishReason: "stop" };
+        }
+        return gen();
+      },
+      getCapabilities() {
+        return {
+          streaming: false,
+          supportsTopP: true,
+          supportsStopSequences: true,
+        };
+      },
+      mapError(e) {
+        return LLMError.isInstance(e)
+          ? e
+          : new LLMError({
+              code: "UNKNOWN",
+              message: String(e),
+              retryable: false,
+            });
+      },
+    };
+    const client = createLLMClient({
+      registry: createRegistry([nonStreamingAdapter]),
+      resolveApiKey: () => "k",
+      strictParams: true,
+    });
+
+    await expect(client.streamText({ model: "nostream/x", prompt: "p" })).rejects.toMatchObject({
+      code: "INVALID_REQUEST",
+      message: "nostream/x does not support streaming",
+    });
+  });
+
   it("streamText fails mid-iteration", async () => {
     const throwingAdapter: LLMAdapter = {
       vendorId: "throwmid",

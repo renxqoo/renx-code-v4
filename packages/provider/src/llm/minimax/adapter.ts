@@ -1,7 +1,7 @@
 import { LLMError, RetryableError } from "../errors";
 import type { LLMAdapter, AdapterInvokeContext } from "../adapter";
 import { createOpenAIAdapter } from "../adapters/openai-adapter";
-import { withAdapterFetch } from "../adapter-request";
+import { bearerAuthHeaders, withAdapterFetch } from "../adapter-request";
 import { assertNoReservedProviderOptions } from "../internal/provider-options";
 import { readJsonOrText, hexToBytes } from "../internal/util";
 import { createStatusMapper } from "../internal/video-status";
@@ -173,7 +173,7 @@ function createMinimaxMultimodalMethods() {
       return withAdapterFetch(
         ctx,
         resolvePath(ctx, "imageGeneration"),
-        { json: body, modelId: request.modelId },
+        { authHeaders: bearerAuthHeaders(ctx.apiKey), json: body, modelId: request.modelId },
         async (res) => {
           const json = await parseMiniMaxJson(res, request.modelId);
           const data = json.data as Record<string, unknown> | undefined;
@@ -234,7 +234,7 @@ function createMinimaxMultimodalMethods() {
       return withAdapterFetch(
         ctx,
         resolvePath(ctx, "textToAudio"),
-        { json: body, modelId: request.modelId },
+        { authHeaders: bearerAuthHeaders(ctx.apiKey), json: body, modelId: request.modelId },
         async (res) => {
           const json = await parseMiniMaxJson(res, request.modelId);
           const data = json.data as Record<string, unknown> | undefined;
@@ -293,7 +293,7 @@ function createMinimaxMultimodalMethods() {
       return withAdapterFetch(
         ctx,
         resolvePath(ctx, "videoGeneration"),
-        { json: body, modelId: request.modelId },
+        { authHeaders: bearerAuthHeaders(ctx.apiKey), json: body, modelId: request.modelId },
         async (res) => {
           const json = await parseMiniMaxJson(res, request.modelId);
           return { videoId: String(json.task_id ?? ""), status: "queued", raw: json };
@@ -308,7 +308,12 @@ function createMinimaxMultimodalMethods() {
       return withAdapterFetch(
         ctx,
         resolvePath(ctx, "videoGenerationQuery"),
-        { method: "GET", params: { task_id: query.videoId }, modelId: query.videoId },
+        {
+          authHeaders: bearerAuthHeaders(ctx.apiKey),
+          method: "GET",
+          params: { task_id: query.videoId },
+          modelId: query.videoId,
+        },
         async (res) => {
           const json = await parseMiniMaxJson(res, query.videoId);
           const st = mapQueryStatus(String(json.status ?? "other"));
@@ -347,7 +352,12 @@ function createMinimaxMultimodalMethods() {
       return withAdapterFetch(
         ctx,
         resolvePath(ctx, "fileRetrieve"),
-        { method: "GET", params: { file_id: query.fileId }, modelId },
+        {
+          authHeaders: bearerAuthHeaders(ctx.apiKey),
+          method: "GET",
+          params: { file_id: query.fileId },
+          modelId,
+        },
         async (res) => {
           const json = await parseMiniMaxJson(res, modelId);
           const file = json.file as Record<string, unknown> | undefined;

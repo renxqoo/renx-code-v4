@@ -44,6 +44,9 @@ describe("Anthropic adapter", () => {
     expect(out.finishReason).toBe("length");
     expect(out.usage?.inputTokens).toBe(3);
     const [, init] = fetchMock.mock.calls[0]!;
+    expect((init?.headers as Record<string, string>)["x-api-key"]).toBe("k");
+    expect((init?.headers as Record<string, string>)["anthropic-version"]).toBe("2023-06-01");
+    expect((init?.headers as Record<string, string>).Authorization).toBeUndefined();
     const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
     expect(body.system).toBe("sys");
     expect((body.messages as Array<{ role: string; content: unknown }>)[0]!.content).toEqual([

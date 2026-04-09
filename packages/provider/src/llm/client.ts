@@ -181,10 +181,20 @@ function assertStrictTextParams(
   adapter: ReturnType<LLMRegistry["get"]>,
   handle: ModelHandle,
   opts: GenerateTextOptions | StreamTextOptions,
+  mode?: "stream",
 ): void {
   if (!strictParams) return;
 
   const capabilities = adapter.getCapabilities(handle.modelId);
+  if (mode === "stream" && !capabilities.streaming) {
+    throw new LLMError({
+      code: "INVALID_REQUEST",
+      message: `${handle.vendorId}/${handle.modelId} does not support streaming`,
+      retryable: false,
+      vendor: handle.vendorId,
+      modelId: handle.modelId,
+    });
+  }
   if (opts.topP !== undefined && !capabilities.supportsTopP) {
     throw new LLMError({
       code: "INVALID_REQUEST",
@@ -216,6 +226,80 @@ function assertStrictTextParams(
       vendor: handle.vendorId,
       modelId: handle.modelId,
     });
+  }
+}
+
+function streamIdleTimeoutError(handle: ModelHandle, timeoutMs: number): LLMError {
+  return new LLMError({
+    code: "TIMEOUT",
+    message: `${handle.vendorId}/${handle.modelId} stream idle timeout after ${timeoutMs}ms`,
+    retryable: true,
+    vendor: handle.vendorId,
+    modelId: handle.modelId,
+  });
+}
+
+function streamAbortError(handle: ModelHandle, reason: unknown): LLMError {
+  return new LLMError({
+    code: "ABORTED",
+    message: "Request aborted",
+    retryable: false,
+    vendor: handle.vendorId,
+    modelId: handle.modelId,
+    cause: reason,
+  });
+}
+
+async function nextStreamChunkWithTimeout<T>(
+  iterator: AsyncIterator<T>,
+  handle: ModelHandle,
+  abortSignal: AbortSignal | undefined,
+  timeoutMs: number | undefined,
+): Promise<IteratorResult<T>> {
+  if (!abortSignal && (timeoutMs === undefined || timeoutMs <= 0)) {
+    return iterator.next();
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let removeAbortListener: (() => void) | undefined;
+  try {
+    if (abortSignal?.aborted) {
+      throw streamAbortError(handle, abortSignal.reason);
+    }
+
+    const pending: Array<Promise<IteratorResult<T>>> = [iterator.next()];
+    if (abortSignal) {
+      pending.push(
+        new Promise<IteratorResult<T>>((_, reject) => {
+          const onAbort = (): void => reject(streamAbortError(handle, abortSignal.reason));
+          abortSignal.addEventListener("abort", onAbort, { once: true });
+          removeAbortListener = () => abortSignal.removeEventListener("abort", onAbort);
+        }),
+      );
+    }
+    if (timeoutMs !== undefined && timeoutMs > 0) {
+      pending.push(
+        new Promise<IteratorResult<T>>((_, reject) => {
+          timer = setTimeout(() => reject(streamIdleTimeoutError(handle, timeoutMs)), timeoutMs);
+        }),
+      );
+    }
+
+    return await Promise.race(pending);
+  } catch (error) {
+    if (LLMError.isInstance(error) && (error.code === "TIMEOUT" || error.code === "ABORTED")) {
+      try {
+        await iterator.return?.();
+      } catch {
+        // Ignore best-effort cleanup failures; the timeout is the primary error.
+      }
+    }
+    throw error;
+  } finally {
+    removeAbortListener?.();
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
   }
 }
 
@@ -342,7 +426,7 @@ export function createLLMClient(config: LLMClientConfig): LLMClient {
   async function streamText(opts: StreamTextOptions): Promise<StreamTextResult> {
     const handle = normalizeModel(opts.model);
     const adapter = config.registry.get(handle.vendorId);
-    assertStrictTextParams(config.strictParams, adapter, handle, opts);
+    assertStrictTextParams(config.strictParams, adapter, handle, opts, "stream");
     const req = buildCanonicalRequest({ handle, ...opts });
     const ctx = buildCtx(handle.vendorId, handle.modelId, opts);
     const policy = mergeCallRetry(policyBase, opts);
@@ -410,14 +494,27 @@ export function createLLMClient(config: LLMClientConfig): LLMClient {
     });
 
     async function* wrapped(): AsyncGenerator<CanonicalStreamChunk> {
+      const iterator = iterable[Symbol.asyncIterator]();
       let acc = "";
       let reasoningAcc = "";
       const toolCallMap = new Map<number, CanonicalToolCall>();
       let lastUsage: CanonicalUsage | undefined;
       let lastFinish: CanonicalFinishReason = "other";
       let settled = false;
+      let iteratorDone = false;
       try {
-        for await (const c of iterable) {
+        while (true) {
+          const step = await nextStreamChunkWithTimeout(
+            iterator,
+            handle,
+            opts.abortSignal,
+            opts.timeoutMs ?? config.defaultTimeoutMs,
+          );
+          if (step.done) {
+            iteratorDone = true;
+            break;
+          }
+          const c = step.value;
           await Promise.resolve(config.hooks?.onStreamChunk?.({ chunk: c }));
           if (c.type === "text-delta") acc += c.textDelta;
           if (c.type === "reasoning-delta") reasoningAcc += c.reasoningDelta;
@@ -471,6 +568,13 @@ export function createLLMClient(config: LLMClientConfig): LLMClient {
         });
         throw err;
       } finally {
+        if (!iteratorDone) {
+          try {
+            await iterator.return?.();
+          } catch {
+            // Preserve the original stream result/error; cleanup is best-effort.
+          }
+        }
         if (!settled) {
           // Consumer stopped early (break/return) — settle promises & fire hook.
           resolveText(acc);

@@ -1,6 +1,6 @@
 import { LLMError } from "../errors";
 import type { LLMAdapter, AdapterInvokeContext } from "../adapter";
-import { withAdapterFetch } from "../adapter-request";
+import { bearerAuthHeaders, withAdapterFetch } from "../adapter-request";
 import { mapHttpError } from "./openai-http-errors";
 import { readSseEvents } from "../internal/sse";
 import { createOpenAIMultimodalMethods, OPENAI_MULTIMODAL_PATHS } from "./openai-multimodal";
@@ -218,6 +218,7 @@ export function createOpenAIAdapter(): LLMAdapter {
         patchedCtx,
         path,
         {
+          authHeaders: bearerAuthHeaders(ctx.apiKey),
           json: buildBody(request, false),
           modelId: request.modelId,
         },
@@ -253,6 +254,7 @@ export function createOpenAIAdapter(): LLMAdapter {
         patchedCtx,
         path,
         {
+          authHeaders: bearerAuthHeaders(ctx.apiKey),
           json: buildBody(request, true),
           modelId: request.modelId,
         },

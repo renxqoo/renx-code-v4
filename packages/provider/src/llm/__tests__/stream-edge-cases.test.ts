@@ -6,8 +6,8 @@ import { createEchoAdapter } from "../adapters/echo-adapter";
 import { createRegistry } from "../registry";
 import { defaultRetryPolicy, executeWithRetry } from "../retry";
 import { LLMError } from "../errors";
-import type { AdapterInvokeContext } from "../adapter";
-import type { CanonicalRequest } from "../types";
+import type { AdapterInvokeContext, LLMAdapter } from "../adapter";
+import type { CanonicalRequest, CanonicalStreamChunk } from "../types";
 
 const minimalReq: CanonicalRequest = {
   modelId: "gpt-4o-mini",
@@ -45,6 +45,10 @@ function openaiCtx(fetchImpl: typeof fetch): AdapterInvokeContext {
     apiKey: "k",
     vendorId: "openai",
   };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 describe("stream timeout semantics (adapter)", () => {
@@ -263,7 +267,7 @@ describe("SSE / stream failure propagation", () => {
   });
 });
 
-describe("client stream + user abort (current semantics)", () => {
+describe("client stream + user abort", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
@@ -286,24 +290,169 @@ describe("client stream + user abort (current semantics)", () => {
     await expect(p).rejects.toMatchObject({ code: "ABORTED" });
   }, 10_000);
 
-  it("after connect, user AbortSignal does not cancel echo stream body (documented gap)", async () => {
+  it("after connect, user AbortSignal cancels stream consumption", async () => {
     const ac = new AbortController();
+    const abortableAdapter: LLMAdapter = {
+      vendorId: "abortable",
+      async generateText() {
+        return { text: "ok", finishReason: "stop" };
+      },
+      async streamText() {
+        async function* gen(): AsyncGenerator<CanonicalStreamChunk> {
+          yield { type: "text-delta", textDelta: "first" };
+          await sleep(100);
+          yield { type: "text-delta", textDelta: "second" };
+          yield { type: "finish", finishReason: "stop" };
+        }
+        return gen();
+      },
+      getCapabilities() {
+        return { streaming: true, supportsTopP: true, supportsStopSequences: true };
+      },
+      mapError(error, ctx) {
+        return LLMError.isInstance(error)
+          ? error
+          : new LLMError({
+              code: "UNKNOWN",
+              message: error instanceof Error ? error.message : String(error),
+              retryable: false,
+              vendor: "abortable",
+              modelId: ctx.modelId,
+              cause: error,
+            });
+      },
+    };
     const client = createLLMClient({
-      registry: createRegistry([createEchoAdapter()]),
+      registry: createRegistry([abortableAdapter]),
       resolveApiKey: () => "k",
     });
-    const { textStream } = await client.streamText({
-      model: "echo/m",
+    const { textStream, text, finishReason } = await client.streamText({
+      model: "abortable/m",
       prompt: "body",
       abortSignal: ac.signal,
     });
-    const chunks: string[] = [];
-    for await (const c of textStream) {
-      if (c.type === "text-delta") {
-        chunks.push(c.textDelta);
-        ac.abort();
-      }
-    }
-    expect(chunks.join("")).toContain("echo:body");
+
+    await expect(
+      (async () => {
+        for await (const c of textStream) {
+          if (c.type === "text-delta") {
+            ac.abort("user cancelled");
+          }
+        }
+      })(),
+    ).rejects.toMatchObject({ code: "ABORTED" });
+    await expect(text).rejects.toMatchObject({ code: "ABORTED" });
+    await expect(finishReason).resolves.toBe("error");
   });
+});
+
+describe("client stream idle timeout", () => {
+  it("does not timeout while chunks keep arriving within timeoutMs", async () => {
+    const steadyAdapter: LLMAdapter = {
+      vendorId: "steady",
+      async generateText() {
+        return { text: "ok", finishReason: "stop" };
+      },
+      async streamText() {
+        async function* gen(): AsyncGenerator<CanonicalStreamChunk> {
+          yield { type: "text-delta", textDelta: "A" };
+          await sleep(20);
+          yield { type: "text-delta", textDelta: "B" };
+          await sleep(20);
+          yield { type: "text-delta", textDelta: "C" };
+          yield { type: "finish", finishReason: "stop" };
+        }
+        return gen();
+      },
+      getCapabilities() {
+        return { streaming: true, supportsTopP: true, supportsStopSequences: true };
+      },
+      mapError(error, ctx) {
+        return LLMError.isInstance(error)
+          ? error
+          : new LLMError({
+              code: "UNKNOWN",
+              message: error instanceof Error ? error.message : String(error),
+              retryable: false,
+              vendor: "steady",
+              modelId: ctx.modelId,
+              cause: error,
+            });
+      },
+    };
+    const client = createLLMClient({
+      registry: createRegistry([steadyAdapter]),
+      resolveApiKey: () => "k",
+      defaultTimeoutMs: 40,
+    });
+
+    const { textStream, text, finishReason } = await client.streamText({
+      model: "steady/m",
+      prompt: "go",
+    });
+    const seen: string[] = [];
+    for await (const chunk of textStream) {
+      if (chunk.type === "text-delta") seen.push(chunk.textDelta);
+    }
+
+    expect(seen.join("")).toBe("ABC");
+    await expect(text).resolves.toBe("ABC");
+    await expect(finishReason).resolves.toBe("stop");
+  });
+
+  it("times out when no new stream chunk arrives before timeoutMs", async () => {
+    const stallingAdapter: LLMAdapter = {
+      vendorId: "stall",
+      async generateText() {
+        return { text: "ok", finishReason: "stop" };
+      },
+      async streamText() {
+        async function* gen(): AsyncGenerator<CanonicalStreamChunk> {
+          yield { type: "text-delta", textDelta: "A" };
+          await sleep(70);
+          yield { type: "text-delta", textDelta: "B" };
+          yield { type: "finish", finishReason: "stop" };
+        }
+        return gen();
+      },
+      getCapabilities() {
+        return { streaming: true, supportsTopP: true, supportsStopSequences: true };
+      },
+      mapError(error, ctx) {
+        return LLMError.isInstance(error)
+          ? error
+          : new LLMError({
+              code: "UNKNOWN",
+              message: error instanceof Error ? error.message : String(error),
+              retryable: false,
+              vendor: "stall",
+              modelId: ctx.modelId,
+              cause: error,
+            });
+      },
+    };
+    const client = createLLMClient({
+      registry: createRegistry([stallingAdapter]),
+      resolveApiKey: () => "k",
+      defaultTimeoutMs: 40,
+    });
+
+    const { textStream, text, finishReason } = await client.streamText({
+      model: "stall/m",
+      prompt: "go",
+    });
+
+    await expect(
+      (async () => {
+        for await (const _ of textStream) {
+          // drain until timeout
+        }
+      })(),
+    ).rejects.toMatchObject({
+      code: "TIMEOUT",
+      message: "stall/m stream idle timeout after 40ms",
+    });
+    await expect(text).rejects.toMatchObject({ code: "TIMEOUT" });
+    await expect(finishReason).resolves.toBe("error");
+  }, 10_000);
 });

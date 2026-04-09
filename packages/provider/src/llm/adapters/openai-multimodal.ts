@@ -1,6 +1,6 @@
 import { LLMError } from "../errors";
 import type { AdapterInvokeContext } from "../adapter";
-import { withAdapterFetch } from "../adapter-request";
+import { bearerAuthHeaders, withAdapterFetch } from "../adapter-request";
 import { mapHttpError } from "./openai-http-errors";
 import { assertNoReservedProviderOptions } from "../internal/provider-options";
 import { createStatusMapper } from "../internal/video-status";
@@ -76,7 +76,7 @@ export function createOpenAIMultimodalMethods(defaultBase: string) {
       return withAdapterFetch(
         ctx,
         resolvePath(ctx, "imageGenerations"),
-        { json: body, modelId: request.modelId },
+        { authHeaders: bearerAuthHeaders(ctx.apiKey), json: body, modelId: request.modelId },
         async (res) => {
           if (!res.ok) throw await mapHttpError(res, request.modelId, VENDOR);
           const json = (await res.json()) as Record<string, unknown>;
@@ -119,7 +119,7 @@ export function createOpenAIMultimodalMethods(defaultBase: string) {
       return withAdapterFetch(
         ctx,
         resolvePath(ctx, "audioSpeech"),
-        { json: body, modelId: request.modelId },
+        { authHeaders: bearerAuthHeaders(ctx.apiKey), json: body, modelId: request.modelId },
         async (res) => {
           if (!res.ok) throw await mapHttpError(res, request.modelId, VENDOR);
           const buf = new Uint8Array(await res.arrayBuffer());
@@ -158,7 +158,7 @@ export function createOpenAIMultimodalMethods(defaultBase: string) {
       return withAdapterFetch(
         ctx,
         resolvePath(ctx, "audioTranscriptions"),
-        { body: form, modelId: request.modelId },
+        { authHeaders: bearerAuthHeaders(ctx.apiKey), body: form, modelId: request.modelId },
         async (res) => {
           if (!res.ok) throw await mapHttpError(res, request.modelId, VENDOR);
           const rf = request.responseFormat ?? "json";
@@ -214,7 +214,7 @@ export function createOpenAIMultimodalMethods(defaultBase: string) {
       return withAdapterFetch(
         ctx,
         resolvePath(ctx, "videos"),
-        { body: form, modelId: request.modelId },
+        { authHeaders: bearerAuthHeaders(ctx.apiKey), body: form, modelId: request.modelId },
         async (res) => {
           if (!res.ok) throw await mapHttpError(res, request.modelId, VENDOR);
           const json = (await res.json()) as Record<string, unknown>;
@@ -235,7 +235,7 @@ export function createOpenAIMultimodalMethods(defaultBase: string) {
       return withAdapterFetch(
         ctx,
         `${basePath}/${encodeURIComponent(query.videoId)}`,
-        { method: "GET", modelId: query.videoId },
+        { authHeaders: bearerAuthHeaders(ctx.apiKey), method: "GET", modelId: query.videoId },
         async (res) => {
           if (!res.ok) throw await mapHttpError(res, query.videoId, VENDOR);
           const json = (await res.json()) as Record<string, unknown>;
@@ -270,7 +270,7 @@ export function createOpenAIMultimodalMethods(defaultBase: string) {
       return withAdapterFetch(
         ctx,
         `${basePath}/${encodeURIComponent(query.videoId)}/content`,
-        { method: "GET", modelId: query.videoId! },
+        { authHeaders: bearerAuthHeaders(ctx.apiKey), method: "GET", modelId: query.videoId! },
         async (res) => {
           if (!res.ok) throw await mapHttpError(res, query.videoId!, VENDOR);
           const data = new Uint8Array(await res.arrayBuffer());

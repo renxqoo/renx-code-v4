@@ -48,6 +48,7 @@ describe("OpenAI adapter", () => {
     const [reqUrl, init] = fetchMock.mock.calls[0]!;
     expect(String(reqUrl)).toContain("api.example.com/v1/chat/completions");
     const body = JSON.parse(String(init?.body));
+    expect((init?.headers as Record<string, string>).Authorization).toBe("Bearer k");
     expect(body.temperature).toBe(0.1);
     expect(body.max_tokens).toBe(10);
     expect(body.top_p).toBe(0.9);
