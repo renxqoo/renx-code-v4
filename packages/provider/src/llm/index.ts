@@ -54,6 +54,7 @@ export {
   type TextToSpeechOptions,
   type TranscribeOptions,
   type VideoJobCallOptions,
+  type ModelProvider,
 } from "./client";
 export { createDefaultLLMClient, type CreateDefaultLLMClientOptions } from "./default-client";
 export { openai, anthropic, minimax } from "./vendor-models";

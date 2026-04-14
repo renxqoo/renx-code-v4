@@ -28,6 +28,12 @@ importers:
         specifier: ^3.2.0
         version: 3.2.4(@types/node@25.5.2)(tsx@4.21.0)
 
+  packages/agent:
+    dependencies:
+      '@renx/provider':
+        specifier: workspace:*
+        version: link:../provider
+
   packages/examples:
     dependencies:
       '@renx/provider':

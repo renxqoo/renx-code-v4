@@ -24,9 +24,10 @@ import type {
   AdapterEndpoints,
 } from "./types";
 
+export type ModelProvider = ModelHandle | string;
 /** Shared options for text and multimodal calls. */
 export type ClientCallOptionsBase = {
-  model: ModelHandle | string;
+  model: ModelProvider;
   abortSignal?: AbortSignal;
   providerOptions?: Record<string, unknown>;
   retry?: Partial<RetryPolicy> & { deadlineMs?: number };
