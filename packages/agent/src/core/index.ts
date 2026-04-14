@@ -26,10 +26,18 @@ export class Agent {
   async queryModel(config: QueryModelType) {
 
     while (true) {
+      await this.loopStep(config);
+    }
+  }
+
+  async loopStep(config: QueryModelType) {
+    try {
       const { textStream } = await streamText(config);
       for await (const chunk of textStream) {
-         this.handleChunk(chunk)
+        this.handleChunk(chunk)
       }
+    } catch (err) {
+      console.error(err);
     }
   }
 }
