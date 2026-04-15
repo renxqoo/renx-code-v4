@@ -14,10 +14,13 @@
     "demo:tool-calling": "tsx src/provider/08-tool-calling.ts",
     "demo:tool-calling-stream": "tsx src/provider/09-tool-calling-stream.ts",
     "demo:reasoning": "tsx src/provider/10-reasoning.ts",
-    "demo:minimax-tts": "tsx src/provider/11-minimax-tts.ts"
+    "demo:minimax-tts": "tsx src/provider/11-minimax-tts.ts",
+    "demo:agent": "tsx src/agent/01-agent-query.ts"
   },
   "dependencies": {
-    "@renx/provider": "workspace:*"
+    "@renx/agent": "workspace:*",
+    "@renx/provider": "workspace:*",
+    "zod": "^3.24.2"
   },
   "devDependencies": {
     "@types/node": "^25.5.2",
