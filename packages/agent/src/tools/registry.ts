@@ -1,6 +1,5 @@
 import type { AgentTool } from "./type";
 
-
 export class ToolRegistry {
   private readonly tools = new Map<string, AgentTool>();
 

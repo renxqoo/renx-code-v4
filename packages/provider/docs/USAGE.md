@@ -423,6 +423,8 @@ try {
 
 ### 5.1 默认超时与重试
 
+库默认 **`maxAttempts: 1`（不重试）**。需要自动重试时在 Client 上配置 **`defaultRetry`**，或在单次调用时传 **`retry`**。
+
 ```typescript
 const client = createLLMClient({
   registry: createRegistryForVendors(["openai", "anthropic"]),
@@ -439,7 +441,7 @@ const client = createLLMClient({
 });
 ```
 
-单次调用可用 **`retry: { maxAttempts: 1 }`** 关闭重试，或 **`deadlineMs`** 限制整次调用的重试窗口。
+单次调用可用 **`retry`** 覆盖默认策略，或 **`deadlineMs`** 限制整次调用的重试窗口。
 
 ### 5.2 `strictParams`
 

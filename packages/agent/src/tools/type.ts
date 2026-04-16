@@ -1,11 +1,10 @@
 import zod from "zod";
 
-
 export type ToolCall = {
   id: string;
   name: string;
   args: Record<string, unknown>;
-}
+};
 
 export type AgentTool = {
   id: string;
@@ -17,9 +16,8 @@ export type AgentTool = {
   schema: zod.ZodSchema;
 };
 
-
 export type AgentToolExecutionResult = {
   success: boolean;
   content: string;
   metadata: Record<string, unknown>;
-}
+};

@@ -76,7 +76,7 @@ function assertMiniMaxBaseResp(
   if (code === 0 || code === undefined) return;
   const msg = String(base.status_msg ?? "MiniMax API error");
   const c = typeof code === "number" ? code : Number(code);
-  if (c === 1002) {
+  if ([1002, 1003,429,529].includes(c)) {
     throw new RetryableError({ code: "RATE_LIMIT", message: msg, vendor: VENDOR, modelId });
   }
   if (c === 1004 || c === 2049) {

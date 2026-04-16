@@ -110,16 +110,16 @@ async function run() {
     { onStreamChunk: printStreamChunk },
   );
 
-  if (out.error) {
-    console.error("\nerror:", out.error);
-  }
+  // if (out.error) {
+  //   console.error("\nerror:", out.error);
+  // }
 
-  console.log("\n--- 元信息 ---");
-  console.log("finishReason:", out.finishReason);
-  console.log("llmRounds:", out.llmRounds);
+  // console.log("\n--- 元信息 ---");
+  // console.log("finishReason:", out.finishReason);
+  // console.log("llmRounds:", out.llmRounds);
 
-  console.log("\n--- 最终对话 messages（JSON）---\n");
-  console.log(JSON.stringify(out.messages, null, 2));
+  // console.log("\n--- 最终对话 messages（JSON）---\n");
+  // console.log(JSON.stringify(out.messages, null, 2));
 }
 
 run().catch(console.error);

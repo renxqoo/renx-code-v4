@@ -1,2 +1,2 @@
-export * from "./core/index";
+export * from "./agent/agent";
 export * from "./hooks/index";

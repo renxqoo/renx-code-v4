@@ -1,6 +1,6 @@
 import type { CanonicalToolCall, MessagePart } from "@renx/provider";
-import type { Message } from "./message";
-import type { AgentToolExecutionResult } from "./tool/type";
+import type { Message } from "../domain/message";
+import type { AgentToolExecutionResult } from "../tools/type";
 
 /** 将本轮 assistant 文本 + tool_calls 追加到对话（与 `CanonicalMessage` / `MessagePart` 一致）。 */
 export function appendAssistantToolRound(

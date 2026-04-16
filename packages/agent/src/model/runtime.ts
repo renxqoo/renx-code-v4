@@ -6,7 +6,7 @@ import type {
   StreamTextResult,
 } from "@renx/provider";
 import { streamText } from "@renx/provider";
-import type { QueryModelType } from "./type";
+import type { QueryModelType } from "../domain/query-model";
 
 async function* emptyTextStream(): AsyncGenerator<CanonicalStreamChunk> {}
 

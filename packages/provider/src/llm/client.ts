@@ -134,6 +134,7 @@ export type LLMClientConfig = {
   registry: LLMRegistry;
   resolveApiKey: (vendorId: string) => string | undefined;
   fetch?: typeof fetch;
+  /** 覆盖默认重试策略；默认见 `defaultRetryPolicy`（当前为单次请求、不重试）。 */
   defaultRetry?: Partial<RetryPolicy>;
   defaultTimeoutMs?: number;
   strictParams?: boolean;

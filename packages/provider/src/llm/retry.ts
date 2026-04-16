@@ -8,8 +8,9 @@ export type RetryPolicy = {
   jitterRatio: number;
 };
 
+/** 默认不重试：`maxAttempts: 1` 仅一次请求。通过 `LLMClientConfig.defaultRetry` 或单次调用的 `retry` 开启重试。 */
 export const defaultRetryPolicy: RetryPolicy = {
-  maxAttempts: 3,
+  maxAttempts: 1,
   initialDelayMs: 200,
   maxDelayMs: 10_000,
   backoffMultiplier: 2,
