@@ -1,20 +1,34 @@
-import type { AgentTool, AgentToolExecutionResult, ToolCall } from "./type";
-import { validateTool } from "./util";
+import type { SandboxRegistry } from "../sandbox/sandbox-registry";
+import type { SandboxExecutionContext } from "../sandbox/types";
+import type { AgentTool, AgentToolExecutionResult } from "./type";
+import { toolResultError, validateTool } from "./util";
 
-const toolResultError = (toolCall: ToolCall, error: Error): AgentToolExecutionResult => {
-  return {
-    success: false,
-    content: `tool [${toolCall.name}] execution failed: ${error.toString()}`,
-    metadata: {
-      name: toolCall.name,
-      id: toolCall.id,
-      args: toolCall.args,
-      error: error.toString(),
-    },
-  };
-};
+/**
+ * Execute a promise with a timeout. Returns a failure `AgentToolExecutionResult` if the
+ * promise does not settle within `timeoutMs`, otherwise returns the original result.
+ */
+function withTimeout(
+  promise: Promise<AgentToolExecutionResult>,
+  timeoutMs: number,
+  toolName: string,
+  callId: string,
+  args: Record<string, unknown>,
+): Promise<AgentToolExecutionResult> {
+  if (!timeoutMs || timeoutMs <= 0) return promise;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<AgentToolExecutionResult>((resolve) => {
+    timer = setTimeout(() => {
+      resolve(
+        toolResultError(toolName, callId, args, new Error(`Tool execution timed out after ${timeoutMs}ms`)),
+      );
+    }, timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
 
-const executor = async ({
+const executorInProcess = async ({
   toolCall,
   args,
   callId,
@@ -25,18 +39,17 @@ const executor = async ({
 }): Promise<AgentToolExecutionResult> => {
   try {
     const toolArgs = validateTool({ toolCall, args });
-    const result = await toolCall.execute(toolArgs);
-    return result;
+    const exec = toolCall.execute(toolArgs);
+    const timeoutMs = toolCall.timeoutMs;
+    return timeoutMs ? withTimeout(exec, timeoutMs, toolCall.name, callId, args) : exec;
   } catch (error) {
-    return toolResultError(
-      {
-        id: callId,
-        name: toolCall.name,
-        args,
-      },
-      error as Error,
-    );
+    return toolResultError(toolCall.name, callId, args, error as Error);
   }
+};
+
+export type ToolExecutorSandboxOptions = {
+  sandboxRegistry: SandboxRegistry;
+  getSandboxContext: (tool: AgentTool) => SandboxExecutionContext;
 };
 
 /** After a write-phase failure, skipped write/read tools still get explicit failure rows so callers keep aligned slots. */
@@ -66,10 +79,48 @@ type Invocation = { tool: AgentTool; args: Record<string, unknown>; callId: stri
 
 type IndexedInvocation = Invocation & { index: number };
 
-export async function toolExecutor(invocations: Invocation[]): Promise<AgentToolExecutionResult[]> {
+/**
+ * Execute a batch of tool invocations with read/write phase separation.
+ *
+ * **Write tools** (`type: "write_only" | "read_write"`) are executed **sequentially** in order.
+ * If any write tool fails, all remaining writes **and** the entire read phase are skipped
+ * (each skipped invocation gets a `resultSkippedAfterWriteFailure` row).
+ *
+ * **Read tools** (`type: "read_only"`) are executed **concurrently** via `Promise.all`,
+ * but only after all write tools have succeeded.
+ *
+ * **Sandbox integration**: When `sandbox` options are provided, each tool execution is routed
+ * through `SandboxRegistry.resolve(profileId)` to the appropriate `SandboxBackend`.
+ * Without sandbox options, tools run in-process via `executorInProcess`.
+ *
+ * **Timeout**: If a tool has `timeoutMs` set, its execution is wrapped in a `Promise.race`
+ * with a timeout. On timeout, a failure result is returned instead of hanging indefinitely.
+ *
+ * @param invocations - Ordered list of `{ tool, args, callId }` to execute.
+ * @param sandbox - Optional sandbox configuration for isolated execution.
+ * @returns An array of `AgentToolExecutionResult` aligned 1:1 with the input `invocations`.
+ */
+export async function toolExecutor(
+  invocations: Invocation[],
+  sandbox?: ToolExecutorSandboxOptions,
+): Promise<AgentToolExecutionResult[]> {
   if (invocations.length === 0) {
     return [];
   }
+
+  const runOne = async (tool: AgentTool, args: Record<string, unknown>, callId: string) => {
+    if (sandbox) {
+      const context = sandbox.getSandboxContext(tool);
+      const result = sandbox.sandboxRegistry.resolve(context.profileId).execute({
+        tool,
+        args,
+        callId,
+        context,
+      });
+      return withTimeout(result, tool.timeoutMs ?? 0, tool.name, callId, args);
+    }
+    return executorInProcess({ toolCall: tool, args, callId });
+  };
 
   const writeQueue: IndexedInvocation[] = [];
   const readQueue: IndexedInvocation[] = [];
@@ -86,7 +137,7 @@ export async function toolExecutor(invocations: Invocation[]): Promise<AgentTool
 
   for (let w = 0; w < writeQueue.length; w++) {
     const { tool, args, callId, index } = writeQueue[w];
-    const result = await executor({ toolCall: tool, args, callId });
+    const result = await runOne(tool, args, callId);
     results[index] = result;
     if (!result.success) {
       for (let w2 = w + 1; w2 < writeQueue.length; w2++) {
@@ -102,7 +153,7 @@ export async function toolExecutor(invocations: Invocation[]): Promise<AgentTool
 
   if (readQueue.length > 0) {
     const readOutcomes = await Promise.all(
-      readQueue.map(({ tool, args, callId }) => executor({ toolCall: tool, args, callId })),
+      readQueue.map(({ tool, args, callId }) => runOne(tool, args, callId)),
     );
     readQueue.forEach(({ index }, j) => {
       results[index] = readOutcomes[j];

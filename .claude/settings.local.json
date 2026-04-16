@@ -29,8 +29,17 @@
       "Bash(pnpm typecheck:*)",
       "Bash(pnpm lint:*)",
       "Bash(pnpm format:check)",
-      "Bash(pnpm format)"
+      "Bash(pnpm format)",
+      "Bash(pnpm --filter @renx/agent test:*)",
+      "Bash(pnpm --filter @renx/agent build:*)",
+      "Bash(pnpm --filter @renx/examples build:*)"
     ]
   },
-  "enabledMcpjsonServers": ["sequential-thinking", "context7", "tavily", "shadcn"]
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "sequential-thinking",
+    "context7",
+    "tavily",
+    "shadcn"
+  ]
 }
