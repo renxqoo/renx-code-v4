@@ -7,7 +7,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Deep-clone a value suitable for middleware context snapshots.
+ * Deep-clone a value suitable for runtime snapshots and audit payloads.
  * Handles plain objects, arrays, Date, RegExp, Map, Set, and primitives.
  * Non-cloneable values (functions, symbols, etc.) are returned as-is.
  */

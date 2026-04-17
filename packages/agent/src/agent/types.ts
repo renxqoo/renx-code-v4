@@ -11,6 +11,8 @@ import type { RuntimeOutcome } from "../model/runtime";
 import type { SandboxRegistry } from "../sandbox/sandbox-registry";
 import type { ToolRegistry } from "../tools/registry";
 import type { AgentLogger } from "./logger";
+import type { AgentCheckpointStore } from "../runtime/checkpoint-store";
+import type { TerminationPolicy } from "../runtime/termination-policy";
 
 /** 供 `llmRetry.isRetryable` 判断本次失败是否值得再发起一次 `runtime`。 */
 export type LlmRetryPredicateContext = {
@@ -61,9 +63,14 @@ export type AgentConstructorConfig = {
   llmClientOptions?: CreateDefaultLLMClientOptions;
   /** Structured logger for Agent lifecycle events. Defaults to `noopLogger`. */
   logger?: AgentLogger;
+  /** Optional run/step persistence adapter for audit, resume, and enterprise tracing. */
+  checkpointStore?: AgentCheckpointStore;
+  /** Optional termination policy override. */
+  terminationPolicy?: TerminationPolicy;
 };
 
 export type QueryModelOutcome = {
+  runId?: string;
   messages: Message[];
   finishReason: CanonicalFinishReason;
   llmRounds: number;

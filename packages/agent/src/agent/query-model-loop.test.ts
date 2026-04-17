@@ -7,6 +7,7 @@ import { createDefaultSandboxRegistry } from "../sandbox/default-registry";
 import { DEFAULT_LLM_MAX_RETRIES } from "./llm-retry";
 import type { CanonicalToolCall } from "@renx/provider";
 import zod from "zod";
+import { createPermissionHook } from "./hooks";
 
 vi.mock("../model/runtime", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../model/runtime")>();
@@ -164,7 +165,7 @@ describe("runQueryModelLoop — tool execution", () => {
     expect(out.messages.length).toBeGreaterThan(baseParams.initial.messages.length);
   });
 
-  it("throws when tool is not registered", async () => {
+  it("returns structured error when tool is not registered", async () => {
     const registry = new ToolRegistry();
     const call: CanonicalToolCall = {
       id: "c1",
@@ -173,9 +174,10 @@ describe("runQueryModelLoop — tool execution", () => {
     };
     runtime.mockResolvedValueOnce(toolCallsOutcome([call]));
 
-    await expect(runQueryModelLoop({ ...baseParams, registry })).rejects.toThrow(
-      "Tool not registered",
-    );
+    const out = await runQueryModelLoop({ ...baseParams, registry });
+    expect(out.error).toBeInstanceOf(Error);
+    expect((out.error as Error).message).toContain("Tool not registered");
+    expect(out.finishReason).toBe("error");
   });
 });
 
@@ -214,29 +216,40 @@ describe("runQueryModelLoop — maxSteps", () => {
   });
 });
 
-describe("runQueryModelLoop — middleware early return", () => {
+describe("runQueryModelLoop — enterprise hooks", () => {
   beforeEach(() => {
     runtime.mockReset();
   });
 
-  it("stops when middleware sets control.continue = false", async () => {
-    runtime.mockResolvedValue(okOutcome());
-
-    const stoppingMiddleware = vi.fn(async (ctx, next) => {
-      if (ctx.event === "beforeRun") {
-        ctx.control = { continue: false, stopReason: "blocked" };
-      }
-      await next();
+  it("stops when a permission hook aborts the run", async () => {
+    const registry = new ToolRegistry();
+    registry.register({
+      id: "delete_file",
+      name: "delete_file",
+      type: "write_only",
+      schema: zod.object({ path: zod.string() }),
+      execute: vi.fn(),
     });
+    runtime.mockResolvedValueOnce(
+      toolCallsOutcome([{ id: "c1", name: "delete_file", arguments: '{"path":"/tmp/a"}' }]),
+    );
 
     const out = await runQueryModelLoop({
       ...baseParams,
-      middlewares: [stoppingMiddleware],
+      registry,
+      enterpriseHooks: [
+        createPermissionHook({
+          toolsRequiringConfirmation: ["delete_file"],
+          confirm: async () => false,
+          onReject: "abort",
+          rejectReason: "blocked",
+        }),
+      ],
     });
 
     expect(out.stopped).toBe(true);
     expect(out.stopReason).toBe("blocked");
-    expect(runtime).not.toHaveBeenCalled();
+    expect(runtime).toHaveBeenCalledTimes(1);
   });
 });
 

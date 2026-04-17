@@ -31,8 +31,8 @@ export type CreateStreamRecorderOptions = {
 };
 
 /**
- * 收集流式输出（不进中间件生命周期）；与 `createStoreMessagesMiddleware` 搭配：
- * messages 仍用 `save` 存结构对话，流式原文用本类按轮或按次落库。
+ * 收集流式输出（不进 enterprise hook 生命周期）；
+ * 结构化审计建议走 `createAuditHook()`，流式原文可由本类按轮或按次落库。
  */
 export function createStreamRecorder(options?: CreateStreamRecorderOptions): StreamRecorder {
   let text = "";

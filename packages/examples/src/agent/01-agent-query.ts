@@ -15,7 +15,7 @@
  */
 import * as readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { Agent, createPermissionConfirmMiddleware } from "@renx/agent";
+import { Agent, createPermissionHook } from "@renx/agent";
 import type { CanonicalStreamChunk } from "@renx/provider";
 import { isRetryableLlmError, LLMError, minimax, openai } from "@renx/provider";
 import { z } from "zod";
@@ -97,12 +97,12 @@ function createDemoAgent(options: { useOpenRouter: boolean }) {
     },
   });
   agent.use(
-    createPermissionConfirmMiddleware({
-      toolsRequiringConfirm: ["get_weather", "get_time"],
+    createPermissionHook({
+      toolsRequiringConfirmation: ["get_weather", "get_time"],
       onReject: "abort",
-      denyReason: "用户未在终端确认工具调用（示例）",
+      rejectReason: "用户未在终端确认工具调用（示例）",
       confirm: async ({ invocations }) => {
-        console.log("\n--- 权限确认（permission-confirm 中间件）---");
+        console.log("\n--- 权限确认（permission hook）---");
         for (const inv of invocations) {
           console.log(`  工具: ${inv.name}  参数: ${JSON.stringify(inv.args)}`);
         }

@@ -1,12 +1,6 @@
 import type { LlmRetryConfig } from "./types";
 
 /**
- * `shared.llmRetryRemaining`：核心循环在单次 LLM 调用失败时递减并重试（与「模型名 / model id」无关）。
- * 初始值由 `runQueryModelLoop` 在 `beforeRun` 之后按 `Agent.llmRetry` / 默认值写入；也可在自定义中间件的 `beforeRun` 里直接写 `ctx.shared`（已设置则不再覆盖）。
- */
-export const LLM_RETRY_REMAINING_KEY = "llmRetryRemaining" as const;
-
-/**
  * 未配置 `llmRetry` 时使用的默认「再试次数」。
  * 与 `LlmRetryConfig.maxRetries` 语义一致：首次失败后最多再发起几次新请求（不含首次）。
  */
