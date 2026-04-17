@@ -6,8 +6,10 @@
  * const r = await generateText({ model: openai("gpt-4o-mini"), prompt: "Hi" });
  * ```
  *
- * Behind the scenes a lazily-initialised default client is used.
- * For advanced scenarios (multi-tenant, custom hooks, …) use `createLLMClient` / `createDefaultLLMClient`.
+ * - 无第二参数时：使用进程内**懒加载单例** `createDefaultLLMClient({})`（读环境变量密钥等）。
+ * - 有第二参数时：每次调用 **`createDefaultLLMClient(clientOptions)` 新实例**，不污染单例。
+ *
+ * 需要长期持有同一 Client（如 Agent、多租户）请用 `createDefaultLLMClient` / `createLLMClient`。
  */
 
 import { createDefaultLLMClient, type CreateDefaultLLMClientOptions } from "./default-client";
@@ -32,31 +34,22 @@ import type {
   CanonicalVideoResult,
 } from "./types";
 
-// ── Lazy singleton ──────────────────────────────────────────────────────────
+// ── Lazy singleton（仅当未传第二参数时使用）────────────────────────────────────
 
-let _client: LLMClient | null = null;
-let _clientOptions: CreateDefaultLLMClientOptions | undefined;
+let _singleton: LLMClient | null = null;
 
-/**
- * Return (or lazily create) the shared default client.
- *
- * @param options — forwarded to `createDefaultLLMClient` on first call.
- *                  Subsequent calls with different options are a no-op
- *                  (the first configuration wins). Call `resetDefaultClient()`
- *                  to force re-creation.
- */
-export function getDefaultClient(options?: CreateDefaultLLMClientOptions): LLMClient {
-  if (!_client) {
-    _clientOptions = options;
-    _client = createDefaultLLMClient(options ?? {});
+function getSingleton(): LLMClient {
+  if (!_singleton) {
+    _singleton = createDefaultLLMClient({});
   }
-  return _client;
+  return _singleton;
 }
 
-/** Discard the cached default client so the next call creates a fresh one. */
-export function resetDefaultClient(): void {
-  _client = null;
-  _clientOptions = undefined;
+function resolveClient(clientOptions?: CreateDefaultLLMClientOptions): LLMClient {
+  if (clientOptions !== undefined) {
+    return createDefaultLLMClient(clientOptions);
+  }
+  return getSingleton();
 }
 
 // ── Functional wrappers ─────────────────────────────────────────────────────
@@ -65,54 +58,54 @@ export async function generateText(
   options: GenerateTextOptions,
   clientOptions?: CreateDefaultLLMClientOptions,
 ): Promise<CanonicalTextResult> {
-  return getDefaultClient(clientOptions).generateText(options);
+  return resolveClient(clientOptions).generateText(options);
 }
 
 export async function streamText(
   options: StreamTextOptions,
   clientOptions?: CreateDefaultLLMClientOptions,
 ): Promise<StreamTextResult> {
-  return getDefaultClient(clientOptions).streamText(options);
+  return resolveClient(clientOptions).streamText(options);
 }
 
 export async function generateImage(
   options: GenerateImageOptions,
   clientOptions?: CreateDefaultLLMClientOptions,
 ): Promise<CanonicalImageResult> {
-  return getDefaultClient(clientOptions).generateImage(options);
+  return resolveClient(clientOptions).generateImage(options);
 }
 
 export async function textToSpeech(
   options: TextToSpeechOptions,
   clientOptions?: CreateDefaultLLMClientOptions,
 ): Promise<CanonicalSpeechResult> {
-  return getDefaultClient(clientOptions).textToSpeech(options);
+  return resolveClient(clientOptions).textToSpeech(options);
 }
 
 export async function transcribe(
   options: TranscribeOptions,
   clientOptions?: CreateDefaultLLMClientOptions,
 ): Promise<CanonicalTranscriptionResult> {
-  return getDefaultClient(clientOptions).transcribe(options);
+  return resolveClient(clientOptions).transcribe(options);
 }
 
 export async function generateVideo(
   options: GenerateVideoOptions,
   clientOptions?: CreateDefaultLLMClientOptions,
 ): Promise<CanonicalVideoResult> {
-  return getDefaultClient(clientOptions).generateVideo(options);
+  return resolveClient(clientOptions).generateVideo(options);
 }
 
 export async function getVideoJob(
   options: VideoJobCallOptions,
   clientOptions?: CreateDefaultLLMClientOptions,
 ): Promise<CanonicalVideoJob> {
-  return getDefaultClient(clientOptions).getVideoJob(options);
+  return resolveClient(clientOptions).getVideoJob(options);
 }
 
 export async function downloadVideo(
   options: DownloadVideoOptions,
   clientOptions?: CreateDefaultLLMClientOptions,
 ): Promise<CanonicalVideoContentResult> {
-  return getDefaultClient(clientOptions).downloadVideo(options);
+  return resolveClient(clientOptions).downloadVideo(options);
 }

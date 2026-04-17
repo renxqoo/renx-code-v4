@@ -92,6 +92,4 @@ export {
   generateVideo,
   getVideoJob,
   downloadVideo,
-  getDefaultClient,
-  resetDefaultClient,
 } from "./functional";

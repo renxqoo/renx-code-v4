@@ -156,24 +156,16 @@ await generateText(
 );
 ```
 
-**重置单例**（单测、配置热更新等场景）：
-
-```typescript
-import { resetDefaultClient } from "@renx/provider";
-
-resetDefaultClient(); // 下次调用 generateText 等函数时重新初始化
-```
-
 **何时用 Functional API，何时用 Client？**
 
-- **Functional API**：脚本、原型、简单应用 —— 零配置、调用最简
+- **Functional API**：脚本、原型、简单应用 —— 无第二参数时用进程内懒加载单例；**第二参数**传入 `CreateDefaultLLMClientOptions` 时每次新建 Client，不污染单例。
 - **`createLLMClient`**：多租户、注入自定义 `fetch`（单测/代理）、细粒度 `hooks`、不同请求用不同密钥
-- **`createDefaultLLMClient`**：想共享配置但需显式持有 Client 实例
+- **`createDefaultLLMClient`**：显式持有 Client（如 `@renx/agent` 的 `llmClientOptions`），避免依赖函数式 API 的全局单例
 
 ### 2.4 为什么文档里还会出现「手写 registry」？
 
 - 本库是 **多厂商注册表**：一个 `client` 内可同时存在 `openai`、`anthropic`、`minimax`，靠 `model` 前缀路由；`createDefaultLLMClient` 只是把「常用厂商列表 + 环境密钥」封装成默认值。
-- Functional API 底层就是 `createDefaultLLMClient()` 创建的懒加载单例；若需完全自定义（多实例、注入 fetch、自定义 hooks），请用 `createLLMClient`。
+- Functional API 无第二参数时底层为 **`createDefaultLLMClient({})` 的懒加载单例**；若需完全自定义（多实例、注入 fetch、自定义 hooks），请用 `createLLMClient` 或每次调用传入第二参数。
 - `@ai-sdk/anthropic` 的 `anthropic("claude-...")` 在包内已绑定厂商；这里用 **`anthropic("claude-...")` 工厂** 达到相近书写体验，底层仍是统一的 `vendor/model` 与同一套 `LLMClient`。
 
 ### 2.5 环境变量（与 `createDefaultLLMClient` 配合）

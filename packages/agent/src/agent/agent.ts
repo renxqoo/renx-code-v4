@@ -1,4 +1,5 @@
 import type { QueryModelType } from "../domain/query-model";
+import { createDefaultLLMClient, type LLMClient } from "@renx/provider";
 import { createDefaultSandboxRegistry } from "../sandbox/default-registry";
 import type { SandboxRegistry } from "../sandbox/sandbox-registry";
 import { ToolRegistry } from "../tools/registry";
@@ -20,6 +21,7 @@ export type {
   QueryModelOutcome,
   QueryStreamChunkMeta,
 } from "./types";
+export type { CreateDefaultLLMClientOptions } from "@renx/provider";
 export type { SandboxRegistry } from "../sandbox/sandbox-registry";
 export { createDefaultSandboxRegistry, buildSandboxExecutionContext } from "../sandbox/index";
 export {
@@ -61,6 +63,7 @@ export { noopLogger, consoleLogger, type AgentLogger } from "./logger";
 
 export class Agent {
   protected readonly config: Pick<AgentConstructorConfig, "maxSteps" | "llmRetry">;
+  private readonly llmClient: LLMClient | undefined;
   private readonly registry: ToolRegistry;
   private readonly sandboxRegistry: SandboxRegistry;
   private readonly middlewares: AgentMiddleware[] = [];
@@ -68,6 +71,8 @@ export class Agent {
 
   constructor(config: AgentConstructorConfig) {
     this.config = { maxSteps: config.maxSteps, llmRetry: config.llmRetry };
+    this.llmClient =
+      config.llmClientOptions != null ? createDefaultLLMClient(config.llmClientOptions) : undefined;
     this.registry = config.registry ?? new ToolRegistry();
     this.sandboxRegistry = config.sandboxRegistry ?? createDefaultSandboxRegistry();
     this.logger = config.logger ?? noopLogger;
@@ -103,6 +108,7 @@ export class Agent {
         middlewares: this.middlewares,
         sandboxRegistry: this.sandboxRegistry,
         llmRetry: this.config.llmRetry,
+        llmClient: this.llmClient,
         logger: this.logger,
       });
     } catch (err) {

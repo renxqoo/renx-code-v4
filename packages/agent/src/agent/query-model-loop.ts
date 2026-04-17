@@ -33,6 +33,7 @@ import { buildSandboxExecutionContext } from "../sandbox/context";
 import type { SandboxRegistry } from "../sandbox/sandbox-registry";
 import type { AgentLogger } from "./logger";
 import { noopLogger } from "./logger";
+import type { LLMClient } from "@renx/provider";
 import type { LlmRetryConfig, QueryModelHooks, QueryModelOutcome } from "./types";
 
 export type RunQueryModelLoopParams = {
@@ -46,6 +47,11 @@ export type RunQueryModelLoopParams = {
    * 省略时使用 `DEFAULT_LLM_MAX_RETRIES`。
    */
   llmRetry?: LlmRetryConfig;
+  /**
+   * 若提供，则 `runtime` 使用该 `LLMClient.streamText`（与 `Agent` 构造参数 `llmClientOptions` 对应）；
+   * 省略时仍用 `@renx/provider` 的 `streamText(config)` 默认单例。
+   */
+  llmClient?: LLMClient;
   /** Structured logger for lifecycle events. */
   logger?: AgentLogger;
 };
@@ -272,7 +278,8 @@ async function handleToolCalls(
  * 并在 `beforeModelCall` 之后应用 `modelRequest` 中对本次请求的补丁。
  */
 export async function runQueryModelLoop(params: RunQueryModelLoopParams): Promise<QueryModelOutcome> {
-  const { initial, maxSteps, registry, hooks, middlewares = [], sandboxRegistry, llmRetry } = params;
+  const { initial, maxSteps, registry, hooks, middlewares = [], sandboxRegistry, llmRetry, llmClient } =
+    params;
   const logger = params.logger ?? noopLogger;
   const state = initLoopState(initial);
   const hasMiddleware = middlewares.length > 0;
@@ -392,7 +399,7 @@ export async function runQueryModelLoop(params: RunQueryModelLoopParams): Promis
 
     modelAttemptLoop: while (true) {
       logger.debug("modelCall", { llmRound: state.llmRounds, attempt: state.retryDelayAttemptIndex });
-      outcome = await runtime(effectiveConfig);
+      outcome = await runtime(effectiveConfig, llmClient);
       state.lastStream = outcome;
 
       await drainTextStream(

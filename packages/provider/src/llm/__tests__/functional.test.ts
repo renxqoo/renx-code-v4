@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { createEchoAdapter } from "../adapters/echo-adapter";
 import { createRegistry } from "../registry";
 import {
@@ -10,53 +10,14 @@ import {
   generateVideo,
   getVideoJob,
   downloadVideo,
-  getDefaultClient,
-  resetDefaultClient,
 } from "../functional";
 
-// ---------------------------------------------------------------------------
-// Every test must reset the module-level singleton so they don't leak state.
-// ---------------------------------------------------------------------------
-afterEach(() => {
-  resetDefaultClient();
-});
-
-/** Common echo-based client options so the default client uses echo adapter. */
+/** 显式第二参数：每次新建 Client，不依赖已删除的 getDefaultClient / resetDefaultClient。 */
 const echoOpts = {
   registry: createRegistry([createEchoAdapter()]),
   useEnv: false,
   apiKeys: { echo: "test-key" },
 };
-
-// ── Lazy singleton behaviour ────────────────────────────────────────────────
-
-describe("functional API – lazy singleton", () => {
-  it("creates a default client on first call", () => {
-    const c = getDefaultClient(echoOpts);
-    expect(c).toBeDefined();
-    expect(typeof c.generateText).toBe("function");
-  });
-
-  it("returns the same instance on subsequent calls", () => {
-    const a = getDefaultClient(echoOpts);
-    const b = getDefaultClient();
-    expect(a).toBe(b);
-  });
-
-  it("ignores new options after first initialisation", () => {
-    const a = getDefaultClient(echoOpts);
-    // Pass no options — should still return same instance
-    const b = getDefaultClient();
-    expect(a).toBe(b);
-  });
-
-  it("resetDefaultClient forces re-creation", () => {
-    const a = getDefaultClient(echoOpts);
-    resetDefaultClient();
-    const b = getDefaultClient(echoOpts);
-    expect(a).not.toBe(b);
-  });
-});
 
 // ── generateText ────────────────────────────────────────────────────────────
 
@@ -171,21 +132,17 @@ describe("functional transcribe", () => {
 
 describe("functional video pipeline", () => {
   it("starts job, polls status, downloads", async () => {
-    // 1. Start job
     const vid = await generateVideo({ model: "echo/m", prompt: "sunset" }, echoOpts);
     expect(vid.videoId).toContain("echo_vid_");
     expect(vid.status).toBe("queued");
 
-    // 2. Poll status
     const job = await getVideoJob({ model: "echo/m", videoId: vid.videoId }, echoOpts);
     expect(job.status).toBe("completed");
     expect(job.fileId).toBeDefined();
 
-    // 3. Download by videoId
     const bin = await downloadVideo({ model: "echo/m", videoId: vid.videoId }, echoOpts);
     expect(bin.data.length).toBeGreaterThan(0);
 
-    // 4. Download by fileId
     const bin2 = await downloadVideo({ model: "echo/m", fileId: job.fileId }, echoOpts);
     expect(bin2.data.length).toBeGreaterThan(0);
   });
@@ -195,7 +152,6 @@ describe("functional video pipeline", () => {
 
 describe("functional API error handling", () => {
   it("throws UNAUTHORIZED when no API key", async () => {
-    // Use a registry with echo but no apiKeys, and env disabled
     await expect(
       generateText(
         { model: "echo/test", prompt: "hi" },
@@ -205,7 +161,6 @@ describe("functional API error handling", () => {
   });
 
   it("throws NOT_IMPLEMENTED for unsupported capability", async () => {
-    // Anthropic doesn't support generateImage
     const { createAnthropicAdapter } = await import("../adapters/anthropic-adapter");
     await expect(
       generateImage(
@@ -220,18 +175,13 @@ describe("functional API error handling", () => {
   });
 });
 
-// ── Multiple sequential calls share singleton ──────────────────────────────
+// ── Multiple sequential calls with explicit options ─────────────────────────
 
-describe("functional API – multiple calls share client", () => {
-  it("shares default client across sequential generateText calls", async () => {
+describe("functional API – multiple calls with echoOpts", () => {
+  it("each call succeeds independently", async () => {
     const r1 = await generateText({ model: "echo/a", prompt: "first" }, echoOpts);
     const r2 = await generateText({ model: "echo/b", prompt: "second" }, echoOpts);
     expect(r1.text).toBe("echo:first");
     expect(r2.text).toBe("echo:second");
-
-    // Verify singleton was created only once
-    const c1 = getDefaultClient();
-    const c2 = getDefaultClient();
-    expect(c1).toBe(c2);
   });
 });

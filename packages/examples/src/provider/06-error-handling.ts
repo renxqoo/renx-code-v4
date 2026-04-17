@@ -4,13 +4,7 @@
  * Run:  pnpm demo:error-handling
  * Env:  (uses invalid key to trigger errors)
  */
-import {
-  generateText,
-  openai,
-  LLMError,
-  toPublicMessage,
-  resetDefaultClient,
-} from "@renx/provider";
+import { generateText, openai, LLMError, toPublicMessage } from "@renx/provider";
 
 async function main() {
   // --- Catch and classify errors ---
@@ -18,7 +12,6 @@ async function main() {
 
   // 1) Invalid API key → UNAUTHORIZED
   console.log("--- Trigger UNAUTHORIZED (bad key) ---");
-  resetDefaultClient();
   try {
     await generateText(
       { model: openai("gpt-4o-mini"), prompt: "test" },
@@ -41,7 +34,6 @@ async function main() {
 
   // 2) Model not found
   console.log("\n--- Trigger error with non-existent model ---");
-  resetDefaultClient();
   try {
     await generateText({
       model: openai("nonexistent-model-xyz"),

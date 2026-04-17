@@ -3,6 +3,7 @@ import type {
   CanonicalStreamChunk,
   CanonicalToolCall,
   CanonicalUsage,
+  CreateDefaultLLMClientOptions,
 } from "@renx/provider";
 import type { Message } from "../domain/message";
 import type { QueryModelType } from "../domain/query-model";
@@ -53,6 +54,11 @@ export type AgentConstructorConfig = {
    * 省略时使用 `DEFAULT_LLM_MAX_RETRIES`（Provider 默认不重试，由 Agent 承担有限重试）。
    */
   llmRetry?: LlmRetryConfig;
+  /**
+   * 传给 `createDefaultLLMClient`：为该 Agent 单独建 `LLMClient`（网关、密钥、厂商列表等），
+   * 不依赖 `@renx/provider` 函数式 API 的模块级单例。省略时 `runtime` 仍用 `streamText(config)` 默认单例。
+   */
+  llmClientOptions?: CreateDefaultLLMClientOptions;
   /** Structured logger for Agent lifecycle events. Defaults to `noopLogger`. */
   logger?: AgentLogger;
 };

@@ -3,6 +3,7 @@ import type {
   CanonicalStreamChunk,
   CanonicalToolCall,
   CanonicalUsage,
+  LLMClient,
   StreamTextResult,
 } from "@renx/provider";
 import { streamText } from "@renx/provider";
@@ -76,9 +77,10 @@ export function isRecoverableError(err: unknown): boolean {
   return true;
 }
 
-export async function runtime(config: QueryModelType): Promise<RuntimeOutcome> {
+export async function runtime(config: QueryModelType, llmClient?: LLMClient): Promise<RuntimeOutcome> {
   try {
-    const result = await streamText(config);
+    const result =
+      llmClient != null ? await llmClient.streamText(config) : await streamText(config);
     return { ok: true, ...result };
   } catch (err) {
     if (!isRecoverableError(err)) {

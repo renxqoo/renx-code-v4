@@ -17,14 +17,7 @@ import * as readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { Agent, createPermissionConfirmMiddleware } from "@renx/agent";
 import type { CanonicalStreamChunk } from "@renx/provider";
-import {
-  getDefaultClient,
-  isRetryableLlmError,
-  LLMError,
-  minimax,
-  openai,
-  resetDefaultClient,
-} from "@renx/provider";
+import { isRetryableLlmError, LLMError, minimax, openai } from "@renx/provider";
 import { z } from "zod";
 
 async function confirmInTerminal(prompt: string): Promise<boolean> {
@@ -64,6 +57,13 @@ function createDemoAgent(options: { useOpenRouter: boolean }) {
   const { useOpenRouter } = options;
   const agent = new Agent({
     maxSteps: 8,
+    llmClientOptions: useOpenRouter
+      ? {
+          vendors: ["openai"],
+          apiKeys: { openai: process.env.OPENROUTER_API_KEY! },
+          baseUrlByVendor: { openai: "https://openrouter.ai/api" },
+        }
+      : undefined,
     llmRetry: {
       maxRetries: 10,
       retryDelayMs: 1000,
@@ -177,19 +177,6 @@ async function run() {
     );
     process.exitCode = 1;
     return;
-  }
-
-  /** 必须在首次 `streamText` 前配置：Agent 的 `runtime` 使用模块级默认 Client。 */
-  resetDefaultClient();
-  if (useOpenRouter) {
-    getDefaultClient({
-      vendors: ["openai"],
-      apiKeys: { openai: process.env.OPENROUTER_API_KEY! },
-      /** 与内置路径 `v1/chat/completions` 拼接为 `https://openrouter.ai/api/v1/chat/completions` */
-      baseUrlByVendor: { openai: "https://openrouter.ai/api" },
-    });
-  } else {
-    getDefaultClient();
   }
 
   const agent = createDemoAgent({ useOpenRouter });
