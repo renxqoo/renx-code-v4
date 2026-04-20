@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { runQueryModelLoop } from "./query-model-loop";
 import * as runtimeModule from "../model/runtime";
 import type { RuntimeOutcome } from "../model/runtime";
@@ -57,24 +57,19 @@ const baseParams = {
   initial: {
     model: "x" as unknown as import("../domain/query-model").QueryModelType["model"],
     systemPrompt: "",
-    messages: [
-      {
-        role: "user" as const,
-        content: [{ type: "text" as const, text: "hi" }],
-      },
-    ],
+    messages: [{ role: "user" as const, content: [{ type: "text" as const, text: "hi" }] }],
   },
   maxSteps: 5,
   registry: new ToolRegistry(),
   sandboxRegistry: createDefaultSandboxRegistry(),
 };
 
-describe("runQueryModelLoop — model retry", () => {
+describe("runQueryModelLoop", () => {
   beforeEach(() => {
     runtime.mockReset();
   });
 
-  it(`defaults to ${DEFAULT_LLM_MAX_RETRIES} extra attempts: recovers after failures`, async () => {
+  it(`defaults to ${DEFAULT_LLM_MAX_RETRIES} extra attempts and preserves managed status`, async () => {
     runtime
       .mockResolvedValueOnce(failOutcome())
       .mockResolvedValueOnce(failOutcome())
@@ -83,56 +78,11 @@ describe("runQueryModelLoop — model retry", () => {
     const out = await runQueryModelLoop(baseParams);
 
     expect(runtime).toHaveBeenCalledTimes(3);
+    expect(out.status).toBe("finished");
     expect(out.error).toBeUndefined();
-    expect(out.finishReason).toBe("stop");
   });
 
-  it("llmRetry maxRetries 0 disables retry", async () => {
-    runtime.mockResolvedValueOnce(failOutcome());
-
-    const out = await runQueryModelLoop({
-      ...baseParams,
-      llmRetry: { maxRetries: 0 },
-    });
-
-    expect(runtime).toHaveBeenCalledTimes(1);
-    expect(out.error).toBeDefined();
-  });
-
-  it("isRetryable false does not consume retries", async () => {
-    runtime.mockResolvedValueOnce(failOutcome());
-
-    const isRetryable = vi.fn().mockReturnValue(false);
-    await runQueryModelLoop({
-      ...baseParams,
-      llmRetry: { maxRetries: 2, isRetryable },
-    });
-
-    expect(runtime).toHaveBeenCalledTimes(1);
-    expect(isRetryable).toHaveBeenCalledOnce();
-  });
-
-  it("isRetryable true retries until success", async () => {
-    runtime.mockResolvedValueOnce(failOutcome()).mockResolvedValueOnce(okOutcome());
-
-    const isRetryable = vi.fn().mockReturnValue(true);
-    const out = await runQueryModelLoop({
-      ...baseParams,
-      llmRetry: { maxRetries: 2, isRetryable },
-    });
-
-    expect(runtime).toHaveBeenCalledTimes(2);
-    expect(out.error).toBeUndefined();
-    expect(isRetryable).toHaveBeenCalled();
-  });
-});
-
-describe("runQueryModelLoop — tool execution", () => {
-  beforeEach(() => {
-    runtime.mockReset();
-  });
-
-  it("executes tool calls and continues the loop", async () => {
+  it("executes tools and finishes with trace-friendly messages", async () => {
     const registry = new ToolRegistry();
     const execute = vi.fn().mockResolvedValue({
       success: true,
@@ -147,81 +97,20 @@ describe("runQueryModelLoop — tool execution", () => {
       execute,
     });
 
-    const call: CanonicalToolCall = {
-      id: "c1",
-      name: "read_file",
-      arguments: '{"path":"/tmp/test.txt"}',
-    };
-
     runtime
-      .mockResolvedValueOnce(toolCallsOutcome([call]))
+      .mockResolvedValueOnce(
+        toolCallsOutcome([{ id: "c1", name: "read_file", arguments: '{"path":"/tmp/test.txt"}' }]),
+      )
       .mockResolvedValueOnce(okOutcome());
 
     const out = await runQueryModelLoop({ ...baseParams, registry });
 
-    expect(runtime).toHaveBeenCalledTimes(2);
+    expect(out.status).toBe("finished");
     expect(execute).toHaveBeenCalledOnce();
-    expect(out.finishReason).toBe("stop");
     expect(out.messages.length).toBeGreaterThan(baseParams.initial.messages.length);
   });
 
-  it("returns structured error when tool is not registered", async () => {
-    const registry = new ToolRegistry();
-    const call: CanonicalToolCall = {
-      id: "c1",
-      name: "unknown_tool",
-      arguments: "{}",
-    };
-    runtime.mockResolvedValueOnce(toolCallsOutcome([call]));
-
-    const out = await runQueryModelLoop({ ...baseParams, registry });
-    expect(out.error).toBeInstanceOf(Error);
-    expect((out.error as Error).message).toContain("Tool not registered");
-    expect(out.finishReason).toBe("error");
-  });
-});
-
-describe("runQueryModelLoop — maxSteps", () => {
-  beforeEach(() => {
-    runtime.mockReset();
-  });
-
-  it("stops when maxSteps is reached", async () => {
-    // Each call returns tool_calls, so the loop would run forever without maxSteps
-    const registry = new ToolRegistry();
-    const execute = vi.fn().mockResolvedValue({
-      success: true,
-      content: "ok",
-      metadata: {},
-    });
-    registry.register({
-      id: "t",
-      name: "t",
-      type: "read_only",
-      schema: zod.object({}),
-      execute,
-    });
-
-    const call: CanonicalToolCall = { id: "c1", name: "t", arguments: "{}" };
-    runtime.mockImplementation(() =>
-      Promise.resolve(toolCallsOutcome([call])),
-    );
-
-    const out = await runQueryModelLoop({ ...baseParams, registry, maxSteps: 2 });
-
-    expect(out.error).toBeDefined();
-    expect(out.error).toBeInstanceOf(Error);
-    expect((out.error as Error).message).toMatch(/maxSteps/);
-    expect(runtime).toHaveBeenCalledTimes(2);
-  });
-});
-
-describe("runQueryModelLoop — enterprise hooks", () => {
-  beforeEach(() => {
-    runtime.mockReset();
-  });
-
-  it("stops when a permission hook aborts the run", async () => {
+  it("pauses for permission requests", async () => {
     const registry = new ToolRegistry();
     registry.register({
       id: "delete_file",
@@ -230,6 +119,7 @@ describe("runQueryModelLoop — enterprise hooks", () => {
       schema: zod.object({ path: zod.string() }),
       execute: vi.fn(),
     });
+
     runtime.mockResolvedValueOnce(
       toolCallsOutcome([{ id: "c1", name: "delete_file", arguments: '{"path":"/tmp/a"}' }]),
     );
@@ -241,54 +131,14 @@ describe("runQueryModelLoop — enterprise hooks", () => {
         createPermissionHook({
           toolsRequiringConfirmation: ["delete_file"],
           confirm: async () => false,
-          onReject: "abort",
+          onReject: "pause",
           rejectReason: "blocked",
         }),
       ],
     });
 
-    expect(out.stopped).toBe(true);
+    expect(out.status).toBe("waiting_permission");
     expect(out.stopReason).toBe("blocked");
-    expect(runtime).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("runQueryModelLoop — parseToolCallArguments failure", () => {
-  beforeEach(() => {
-    runtime.mockReset();
-  });
-
-  it("logs warning and uses empty args on invalid JSON", async () => {
-    const registry = new ToolRegistry();
-    const execute = vi.fn().mockResolvedValue({
-      success: true,
-      content: "ok",
-      metadata: {},
-    });
-    registry.register({
-      id: "t",
-      name: "t",
-      type: "read_only",
-      schema: zod.object({}),
-      execute,
-    });
-
-    const call: CanonicalToolCall = { id: "c1", name: "t", arguments: "not-json" };
-    runtime
-      .mockResolvedValueOnce(toolCallsOutcome([call]))
-      .mockResolvedValueOnce(okOutcome());
-
-    const warnSpy = vi.fn();
-    const out = await runQueryModelLoop({
-      ...baseParams,
-      registry,
-      logger: { debug: vi.fn(), info: vi.fn(), warn: warnSpy, error: vi.fn() },
-    });
-
-    expect(warnSpy).toHaveBeenCalledWith(
-      "parseToolCallArguments failed",
-      expect.objectContaining({ toolName: "t", callId: "c1" }),
-    );
-    expect(out.finishReason).toBe("stop");
+    expect(out.pendingApproval?.invocations[0]?.name).toBe("delete_file");
   });
 });

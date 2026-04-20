@@ -15,7 +15,12 @@
     "demo:tool-calling-stream": "tsx src/provider/09-tool-calling-stream.ts",
     "demo:reasoning": "tsx src/provider/10-reasoning.ts",
     "demo:minimax-tts": "tsx src/provider/11-minimax-tts.ts",
-    "demo:agent": "tsx src/agent/01-agent-query.ts"
+    "demo:agent": "tsx src/agent/01-agent-query.ts",
+    "demo:agent-lifecycle": "tsx src/agent/02-managed-run-lifecycle.ts",
+    "demo:agent-resume": "tsx src/agent/03-runtime-resume-permission.ts",
+    "demo:agent-cancel": "tsx src/agent/04-runtime-cancel-run.ts",
+    "demo:agent-worker": "tsx src/agent/05-runtime-background-worker.ts",
+    "demo:agent-server": "tsx src/agent/06-queue-worker-primitives.ts"
   },
   "dependencies": {
     "@renx/agent": "workspace:*",

@@ -11,7 +11,9 @@ import type { RuntimeOutcome } from "../model/runtime";
 import type { SandboxRegistry } from "../sandbox/sandbox-registry";
 import type { ToolRegistry } from "../tools/registry";
 import type { AgentLogger } from "./logger";
-import type { AgentCheckpointStore } from "../runtime/checkpoint-store";
+import type { ContextBuilder } from "../runtime/context-builder";
+import type { AgentSessionStore, AgentPendingApproval, AgentRunStatus, AgentRunSummary } from "../runtime/session-store";
+import type { SummaryManager } from "../runtime/summary-manager";
 import type { TerminationPolicy } from "../runtime/termination-policy";
 
 /** 供 `llmRetry.isRetryable` 判断本次失败是否值得再发起一次 `runtime`。 */
@@ -63,22 +65,27 @@ export type AgentConstructorConfig = {
   llmClientOptions?: CreateDefaultLLMClientOptions;
   /** Structured logger for Agent lifecycle events. Defaults to `noopLogger`. */
   logger?: AgentLogger;
-  /** Optional run/step persistence adapter for audit, resume, and enterprise tracing. */
-  checkpointStore?: AgentCheckpointStore;
+  /** Durable run/session store used by the managed runtime. */
+  sessionStore?: AgentSessionStore;
+  /** Optional context builder override. */
+  contextBuilder?: ContextBuilder;
+  /** Optional summary manager override. */
+  summaryManager?: SummaryManager;
   /** Optional termination policy override. */
   terminationPolicy?: TerminationPolicy;
 };
 
 export type QueryModelOutcome = {
-  runId?: string;
+  runId: string;
+  status: AgentRunStatus;
   messages: Message[];
+  summary?: AgentRunSummary;
   finishReason: CanonicalFinishReason;
   llmRounds: number;
   lastStream: RuntimeOutcome;
   error?: unknown;
-  /** 中间件将 `control.continue` 置为 false 时提前结束。 */
-  stopped?: boolean;
   stopReason?: string;
+  pendingApproval?: AgentPendingApproval;
 };
 
 /**

@@ -155,14 +155,14 @@ pnpm --filter @renx/examples run demo:agent
 
 当前主链路：
 
-1. `Agent.queryModel(...)`
-2. `runQueryModelLoop(...)`
-3. `runtime(...)`
-4. `@renx/provider` 的 `streamText(...)` 或注入的 `LLMClient.streamText(...)`
-5. drain stream，收集 `assistantText`、`toolCalls`、`finishReason`
-6. 若是普通文本完成，写入 assistant message 并结束
-7. 若返回 `tool_calls`，解析参数并进入 `toolExecutor(...)`
-8. 工具结果写回 `role: tool` message，继续下一轮
+1. `Agent.run(...)` 或 `Agent.createRun(...)`
+2. `AgentRuntime.startRun(...)` / `resumeRun(...)`
+3. `Harness`
+4. `ContextBuilder` 生成本轮模型输入
+5. `@renx/provider` 的 `streamText(...)` 或注入的 `LLMClient.streamText(...)`
+6. drain stream，收集 `assistantText`、`toolCalls`、`finishReason`
+7. 若返回 `tool_calls`，解析参数并进入 `ToolRuntime(...)`
+8. 工具结果写回 `role: tool` message，更新 session/event trace，继续下一轮
 
 关键文件：
 
@@ -311,7 +311,7 @@ Vitest 根配置会加载 `packages/*/vitest.config.ts`。
 ### 11.3 做 agent 架构重构时
 
 - 先对照 `docs/agent-runtime-architecture/` 明确目标层次
-- 再确认是否要保留现有 `Agent.queryModel()` 兼容入口
+- 统一使用 `Agent.run()` / `createRun()` / `startRun()` 新入口
 - 避免一步把设计稿全部落地，优先沿当前 loop 渐进拆分
 
 ## 12. 一句话结论

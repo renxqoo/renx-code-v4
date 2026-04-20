@@ -6,7 +6,9 @@ import type { QueryModelType } from "../domain/query-model";
 import type { SandboxRegistry } from "../sandbox/sandbox-registry";
 import type { ToolRegistry } from "../tools/registry";
 import { AgentRuntime } from "../runtime/agent-runtime";
-import type { AgentCheckpointStore } from "../runtime/checkpoint-store";
+import type { ContextBuilder } from "../runtime/context-builder";
+import type { AgentSessionStore } from "../runtime/session-store";
+import type { SummaryManager } from "../runtime/summary-manager";
 import type { TerminationPolicy } from "../runtime/termination-policy";
 
 export type RunQueryModelLoopParams = {
@@ -19,15 +21,12 @@ export type RunQueryModelLoopParams = {
   llmRetry?: LlmRetryConfig;
   llmClient?: LLMClient;
   logger?: AgentLogger;
-  checkpointStore?: AgentCheckpointStore;
+  sessionStore?: AgentSessionStore;
   terminationPolicy?: TerminationPolicy;
+  contextBuilder?: ContextBuilder;
+  summaryManager?: SummaryManager;
 };
 
-/**
- * Compatibility wrapper around the enterprise runtime entrypoint.
- * The legacy name is kept so tests and local scripts can call a stable helper,
- * while the orchestration now lives in `runtime/`.
- */
 export async function runQueryModelLoop(params: RunQueryModelLoopParams): Promise<QueryModelOutcome> {
   const runtime = new AgentRuntime({
     maxSteps: params.maxSteps,
@@ -37,8 +36,10 @@ export async function runQueryModelLoop(params: RunQueryModelLoopParams): Promis
     llmRetry: params.llmRetry,
     llmClient: params.llmClient,
     logger: params.logger,
-    checkpointStore: params.checkpointStore,
+    sessionStore: params.sessionStore,
     terminationPolicy: params.terminationPolicy,
+    contextBuilder: params.contextBuilder,
+    summaryManager: params.summaryManager,
   });
 
   return runtime.run(params.initial, params.hooks);

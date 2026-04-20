@@ -5,7 +5,6 @@ import {
   mergeRunProfile,
   type AgentHook,
   type AgentHookEvent,
-  type AgentRunProfilePatch,
   type AgentToolAuthorizationResult,
   type AgentToolInvocation,
   type ResolvedRunProfile,
@@ -24,15 +23,21 @@ import {
   appendToolResultMessages,
 } from "../conversation/tool-messages";
 import type { Message } from "../domain/message";
-import type { QueryModelType } from "../domain/query-model";
 import { runtime, type RuntimeOutcome } from "../model/runtime";
 import { drainTextStream } from "../model/stream-drain";
 import type { SandboxRegistry } from "../sandbox/sandbox-registry";
 import { toolsToCanonical } from "../tools/canonical";
 import type { ToolRegistry } from "../tools/registry";
 import type { AgentToolExecutionResult } from "../tools/type";
+import type { ContextBuilder } from "./context-builder";
 import { DecisionRouter } from "./decision-router";
-import type { RunStateMachine } from "./run-state-machine";
+import type {
+  AgentPendingApproval,
+  AgentRunRecord,
+  AgentRunSummary,
+  AgentRuntimeEvent,
+} from "./session-store";
+import type { SummaryManager } from "./summary-manager";
 import type { TerminationPolicy } from "./termination-policy";
 import { ToolRuntime } from "./tool-runtime";
 
@@ -46,11 +51,15 @@ type HarnessDependencies = {
   llmClient?: LLMClient;
   logger?: AgentLogger;
   terminationPolicy: TerminationPolicy;
-  runStateMachine: RunStateMachine;
+  contextBuilder: ContextBuilder;
+  summaryManager: SummaryManager;
+  recordEvents?: (events: AgentRuntimeEvent[]) => Promise<void>;
+  persistRun?: (patch: Partial<AgentRunRecord>) => Promise<void>;
 };
 
 interface LoopState {
   messages: Message[];
+  summary?: AgentRunSummary;
   llmRounds: number;
   lastStream: RuntimeOutcome;
   retryRemaining: number;
@@ -58,10 +67,13 @@ interface LoopState {
   profile: ResolvedRunProfile;
 }
 
-function initLoopState(initial: QueryModelType, llmRetry?: LlmRetryConfig): LoopState {
+export type HarnessOutcome = QueryModelOutcome;
+
+function initLoopState(run: AgentRunRecord, llmRetry?: LlmRetryConfig): LoopState {
   return {
-    messages: [...initial.messages],
-    llmRounds: 0,
+    messages: [...run.messages],
+    summary: run.summary,
+    llmRounds: run.llmRounds,
     lastStream: {
       ok: false,
       error: new Error("No LLM call was made"),
@@ -79,57 +91,6 @@ function initLoopState(initial: QueryModelType, llmRetry?: LlmRetryConfig): Loop
   };
 }
 
-function successOutcome(
-  messages: Message[],
-  finishReason: Awaited<RuntimeOutcome["finishReason"]>,
-  llmRounds: number,
-  lastStream: RuntimeOutcome,
-  runId: string,
-): QueryModelOutcome {
-  return {
-    runId,
-    messages,
-    finishReason,
-    llmRounds,
-    lastStream,
-  };
-}
-
-function errorOutcome(
-  messages: Message[],
-  llmRounds: number,
-  lastStream: RuntimeOutcome,
-  error: unknown,
-  runId: string,
-): QueryModelOutcome {
-  return {
-    runId,
-    messages,
-    finishReason: "error",
-    llmRounds,
-    lastStream,
-    error,
-  };
-}
-
-function stoppedOutcome(
-  messages: Message[],
-  llmRounds: number,
-  lastStream: RuntimeOutcome,
-  stopReason: string | undefined,
-  runId: string,
-): QueryModelOutcome {
-  return {
-    runId,
-    messages,
-    finishReason: "stop",
-    llmRounds,
-    lastStream,
-    stopped: true,
-    stopReason,
-  };
-}
-
 export class Harness {
   private readonly maxSteps: number;
   private readonly registry: ToolRegistry;
@@ -139,9 +100,12 @@ export class Harness {
   private readonly llmClient?: LLMClient;
   private readonly logger: AgentLogger;
   private readonly terminationPolicy: TerminationPolicy;
-  private readonly runStateMachine: RunStateMachine;
   private readonly decisionRouter = new DecisionRouter();
   private readonly toolRuntime: ToolRuntime;
+  private readonly contextBuilder: ContextBuilder;
+  private readonly summaryManager: SummaryManager;
+  private readonly recordEvents?: (events: AgentRuntimeEvent[]) => Promise<void>;
+  private readonly persistRun?: (patch: Partial<AgentRunRecord>) => Promise<void>;
 
   constructor(deps: HarnessDependencies) {
     this.maxSteps = deps.maxSteps;
@@ -152,75 +116,44 @@ export class Harness {
     this.llmClient = deps.llmClient;
     this.logger = deps.logger ?? noopLogger;
     this.terminationPolicy = deps.terminationPolicy;
-    this.runStateMachine = deps.runStateMachine;
     this.toolRuntime = new ToolRuntime(deps.registry, deps.sandboxRegistry, this.logger);
+    this.contextBuilder = deps.contextBuilder;
+    this.summaryManager = deps.summaryManager;
+    this.recordEvents = deps.recordEvents;
+    this.persistRun = deps.persistRun;
   }
 
-  async run(initial: QueryModelType): Promise<QueryModelOutcome> {
-    const state = initLoopState(initial, this.llmRetry);
-    state.profile = await this.resolveRunProfile(initial);
-
-    await this.emitEvent({
-      type: "run_started",
-      runId: this.runStateMachine.runId,
-      maxSteps: this.maxSteps,
-      model: state.profile.overrides.model ?? initial.model,
-      labels: state.profile.labels,
-      featureFlags: state.profile.featureFlags,
-    });
+  async run(run: AgentRunRecord): Promise<HarnessOutcome> {
+    const state = initLoopState(run, this.llmRetry);
+    state.profile = await this.resolveRunProfile(run);
 
     while (true) {
       if (state.llmRounds >= this.maxSteps) {
         const finishReason = await state.lastStream.finishReason;
-        const outcome: QueryModelOutcome = {
-          runId: this.runStateMachine.runId,
+        return {
+          runId: run.runId,
+          status: "failed",
           messages: state.messages,
+          summary: state.summary,
           finishReason,
           llmRounds: state.llmRounds,
           lastStream: state.lastStream,
           error: new Error(`maxSteps (${this.maxSteps}) exceeded`),
+          stopReason: "max_steps",
         };
-        await this.emitRunFinished(outcome, state.profile);
-        return outcome;
       }
 
       state.llmRounds++;
-      await this.runStateMachine.beginStep(state.llmRounds, state.llmRounds, state.messages);
-      await this.emitEvent({
-        type: "step_started",
-        runId: this.runStateMachine.runId,
-        llmRound: state.llmRounds,
-        messageCount: state.messages.length,
-        labels: state.profile.labels,
-        featureFlags: state.profile.featureFlags,
-      });
-
-      await this.runStateMachine.persistStep({
-        stepIndex: state.llmRounds,
-        llmRound: state.llmRounds,
-        status: "building_context",
-        messages: state.messages,
-      });
-
-      const streamConfig = this.buildStreamConfig(initial, state.messages, state.profile);
-
-      await this.runStateMachine.persistStep({
-        stepIndex: state.llmRounds,
-        llmRound: state.llmRounds,
-        status: "calling_model",
-        messages: state.messages,
-      });
-
-      await this.emitEvent({
-        type: "model_started",
-        runId: this.runStateMachine.runId,
-        llmRound: state.llmRounds,
-        model: streamConfig.model,
-        toolCount: streamConfig.tools?.length ?? 0,
-        messageCount: streamConfig.messages.length,
-        labels: state.profile.labels,
-        featureFlags: state.profile.featureFlags,
-      });
+      await this.pushEvents([
+        {
+          type: "step_started",
+          runId: run.runId,
+          at: new Date().toISOString(),
+          stepIndex: state.llmRounds,
+          llmRound: state.llmRounds,
+          messageCount: state.messages.length,
+        },
+      ]);
 
       let outcome: RuntimeOutcome;
       let finishReason: Awaited<RuntimeOutcome["finishReason"]>;
@@ -229,8 +162,20 @@ export class Harness {
       let usage: Awaited<RuntimeOutcome["usage"]>;
 
       modelAttemptLoop: while (true) {
+        const tools = mergeCanonicalTools(toolsToCanonical(this.registry.list()), run.initial.tools);
+        const streamConfig = await this.contextBuilder.build({
+          run: {
+            ...run,
+            messages: state.messages,
+            llmRounds: state.llmRounds,
+            summary: state.summary,
+          },
+          profile: state.profile,
+          tools,
+        });
+
         this.logger.debug("modelCall", {
-          runId: this.runStateMachine.runId,
+          runId: run.runId,
           llmRound: state.llmRounds,
           retryRemaining: state.retryRemaining,
           attempt: state.retryDelayAttemptIndex,
@@ -258,24 +203,26 @@ export class Harness {
           outcome.usage,
         ]);
 
-        await this.emitEvent({
-          type: "model_completed",
-          runId: this.runStateMachine.runId,
-          llmRound: state.llmRounds,
-          ok: outcome.ok,
-          finishReason,
-          assistantText,
-          toolCalls: calls,
-          usage,
-          error: outcome.ok ? undefined : outcome.error,
-          labels: state.profile.labels,
-          featureFlags: state.profile.featureFlags,
-        });
+        await this.pushEvents([
+          {
+            type: "model_completed",
+            runId: run.runId,
+            at: new Date().toISOString(),
+            stepIndex: state.llmRounds,
+            llmRound: state.llmRounds,
+            ok: outcome.ok,
+            finishReason,
+            assistantText,
+            toolCalls: calls,
+            usage,
+            error: outcome.ok ? undefined : outcome.error,
+          },
+        ]);
 
         if (outcome.ok) break modelAttemptLoop;
 
         this.logger.warn("modelCallFailed", {
-          runId: this.runStateMachine.runId,
+          runId: run.runId,
           llmRound: state.llmRounds,
           error: String(outcome.error),
         });
@@ -295,18 +242,6 @@ export class Harness {
         await sleepRetryDelay(delayMs, this.hooks?.signal);
       }
 
-      await this.runStateMachine.persistStep({
-        stepIndex: state.llmRounds,
-        llmRound: state.llmRounds,
-        status: "dispatching_decision",
-        messages: state.messages,
-        assistantText,
-        toolCalls: calls,
-        finishReason,
-        usage,
-        error: outcome.ok ? undefined : outcome.error,
-      });
-
       const decision = this.decisionRouter.route({
         outcome,
         finishReason,
@@ -322,59 +257,33 @@ export class Harness {
       });
 
       if (decision.type === "error") {
-        await this.runStateMachine.persistStep({
-          stepIndex: state.llmRounds,
-          llmRound: state.llmRounds,
+        return {
+          runId: run.runId,
           status: "failed",
           messages: state.messages,
-          finishReason,
-          usage,
+          summary: state.summary,
+          finishReason: "error",
+          llmRounds: state.llmRounds,
+          lastStream: outcome,
           error: decision.error,
-        });
-        const result = errorOutcome(
-          state.messages,
-          state.llmRounds,
-          outcome,
-          decision.error,
-          this.runStateMachine.runId,
-        );
-        await this.emitRunFinished(result, state.profile);
-        return result;
+          stopReason: "model_error",
+        };
       }
 
       if (decision.type === "final_answer") {
         state.messages = appendAssistantTextOnly(state.messages, decision.assistantText);
-        await this.runStateMachine.persistStep({
-          stepIndex: state.llmRounds,
-          llmRound: state.llmRounds,
-          status: "completed",
+        await this.refreshSummary(run, state);
+        await this.persistProgress(run, state);
+        return {
+          runId: run.runId,
+          status: "finished",
           messages: state.messages,
-          assistantText: decision.assistantText,
-          toolCalls: decision.toolCalls,
+          summary: state.summary,
           finishReason: decision.finishReason,
-          usage: decision.usage,
-        });
-        const result = successOutcome(
-          state.messages,
-          decision.finishReason,
-          state.llmRounds,
-          outcome,
-          this.runStateMachine.runId,
-        );
-        await this.emitRunFinished(result, state.profile);
-        return result;
+          llmRounds: state.llmRounds,
+          lastStream: outcome,
+        };
       }
-
-      await this.runStateMachine.persistStep({
-        stepIndex: state.llmRounds,
-        llmRound: state.llmRounds,
-        status: "executing_tools",
-        messages: state.messages,
-        assistantText: decision.assistantText,
-        toolCalls: decision.toolCalls,
-        finishReason: decision.finishReason,
-        usage: decision.usage,
-      });
 
       state.messages = appendAssistantToolRound(state.messages, decision.assistantText, decision.toolCalls);
       const invocations = this.toolRuntime.prepare(decision.toolCalls);
@@ -384,130 +293,122 @@ export class Harness {
         args: invocation.args,
       }));
 
-      await this.emitEvent({
-        type: "tool_authorization_requested",
-        runId: this.runStateMachine.runId,
-        llmRound: state.llmRounds,
-        invocations: hookInvocations,
-        labels: state.profile.labels,
-        featureFlags: state.profile.featureFlags,
-      });
-
-      const authorization = await this.authorizeTools(state, hookInvocations);
-      const deniedCallIds = authorization.action === "deny" ? authorization.callIds ?? [] : undefined;
-
-      await this.emitEvent({
-        type: "tool_authorization_resolved",
-        runId: this.runStateMachine.runId,
-        llmRound: state.llmRounds,
-        action: authorization.action,
-        deniedCallIds,
-        reason: "reason" in authorization ? authorization.reason : undefined,
-        labels: state.profile.labels,
-        featureFlags: state.profile.featureFlags,
-      });
+      const authorization = await this.authorizeTools(state, run, hookInvocations);
 
       if (authorization.action === "abort") {
-        const result = stoppedOutcome(
-          state.messages,
-          state.llmRounds,
-          state.lastStream,
-          authorization.reason,
-          this.runStateMachine.runId,
-        );
-        await this.emitRunFinished(result, state.profile);
-        return result;
+        return {
+          runId: run.runId,
+          status: "failed",
+          messages: state.messages,
+          summary: state.summary,
+          finishReason: "stop",
+          llmRounds: state.llmRounds,
+          lastStream: state.lastStream,
+          error: new Error(authorization.reason),
+          stopReason: authorization.reason,
+        };
       }
 
       if (authorization.action === "pause") {
-        await this.runStateMachine.markWaiting("waiting_permission");
-        const result = stoppedOutcome(
-          state.messages,
-          state.llmRounds,
-          state.lastStream,
-          authorization.reason,
-          this.runStateMachine.runId,
-        );
-        await this.emitRunFinished(result, state.profile);
-        return result;
+        const pendingApproval: AgentPendingApproval = {
+          invocations: hookInvocations,
+          reason: authorization.reason,
+          requestedAt: new Date().toISOString(),
+        };
+        return {
+          runId: run.runId,
+          status: "waiting_permission",
+          messages: state.messages,
+          summary: state.summary,
+          finishReason: "stop",
+          llmRounds: state.llmRounds,
+          lastStream: state.lastStream,
+          stopReason: authorization.reason,
+          pendingApproval,
+        };
       }
 
       const results = await this.executeAuthorizedTools(invocations, authorization, state.profile);
       state.messages = appendToolResultMessages(state.messages, decision.toolCalls, results);
 
-      await this.emitEvent({
-        type: "tool_completed",
-        runId: this.runStateMachine.runId,
-        llmRound: state.llmRounds,
-        results,
-        labels: state.profile.labels,
-        featureFlags: state.profile.featureFlags,
-      });
+      await this.pushEvents([
+        {
+          type: "tool_execution_completed",
+          runId: run.runId,
+          at: new Date().toISOString(),
+          stepIndex: state.llmRounds,
+          llmRound: state.llmRounds,
+          toolCalls: decision.toolCalls,
+          results: results.map((result) => ({
+            success: result.success,
+            content: result.content,
+            metadata: result.metadata,
+          })),
+        },
+      ]);
 
-      const terminationError = termination.shouldStop ? termination.error : undefined;
-      await this.runStateMachine.persistStep({
-        stepIndex: state.llmRounds,
-        llmRound: state.llmRounds,
-        status: termination.shouldStop ? "completed" : "evaluating_termination",
-        messages: state.messages,
-        assistantText: decision.assistantText,
-        toolCalls: decision.toolCalls,
-        finishReason: decision.finishReason,
-        usage: decision.usage,
-        error: terminationError,
-      });
+      await this.refreshSummary(run, state);
+      await this.persistProgress(run, state);
 
       if (termination.shouldStop) {
-        const result = terminationError
-          ? errorOutcome(
-              state.messages,
-              state.llmRounds,
-              state.lastStream,
-              terminationError,
-              this.runStateMachine.runId,
-            )
-          : successOutcome(
-              state.messages,
-              decision.finishReason,
-              state.llmRounds,
-              state.lastStream,
-              this.runStateMachine.runId,
-            );
-        await this.emitRunFinished(result, state.profile);
-        return result;
+        return {
+          runId: run.runId,
+          status: termination.error ? "failed" : "finished",
+          messages: state.messages,
+          summary: state.summary,
+          finishReason: decision.finishReason,
+          llmRounds: state.llmRounds,
+          lastStream: state.lastStream,
+          error: termination.error,
+          stopReason: termination.reason,
+        };
       }
-
-      this.runStateMachine.setMessages(state.messages);
     }
   }
 
-  private buildStreamConfig(
-    initial: QueryModelType,
-    messages: Message[],
-    profile: ResolvedRunProfile,
-  ): QueryModelType {
-    const registryCanonical = toolsToCanonical(this.registry.list());
-    const tools = mergeCanonicalTools(registryCanonical, initial.tools);
-    const providerOptions = mergeProviderOptions(initial.providerOptions, profile.overrides.providerOptions);
+  private async refreshSummary(run: AgentRunRecord, state: LoopState): Promise<void> {
+    const nextSummary = await this.summaryManager.maybeUpdate({
+      run: {
+        ...run,
+        messages: state.messages,
+        llmRounds: state.llmRounds,
+        summary: state.summary,
+      },
+      messages: state.messages,
+    });
 
-    return {
-      ...initial,
-      ...profile.overrides,
-      model: profile.overrides.model ?? initial.model,
-      providerOptions,
-      messages,
-      ...(tools ? { tools } : {}),
-      toolChoice: profile.overrides.toolChoice ?? initial.toolChoice,
-    };
+    if (!nextSummary || JSON.stringify(nextSummary) === JSON.stringify(state.summary)) {
+      return;
+    }
+
+    state.summary = nextSummary;
+    await this.pushEvents([
+      {
+        type: "summary_updated",
+        runId: run.runId,
+        at: new Date().toISOString(),
+        summary: nextSummary,
+      },
+    ]);
   }
 
-  private async resolveRunProfile(initial: QueryModelType): Promise<ResolvedRunProfile> {
+  private async persistProgress(run: AgentRunRecord, state: LoopState): Promise<void> {
+    await this.persistRun?.({
+      runId: run.runId,
+      messages: state.messages,
+      llmRounds: state.llmRounds,
+      summary: state.summary,
+      status: "running",
+    });
+  }
+
+  private async resolveRunProfile(run: AgentRunRecord): Promise<ResolvedRunProfile> {
     let profile = createDefaultRunProfile();
     for (const hook of this.enterpriseHooks) {
       const patch = await hook.assignRunProfile?.({
-        runId: this.runStateMachine.runId,
+        runId: run.runId,
         maxSteps: this.maxSteps,
-        initial,
+        initial: run.initial,
         signal: this.hooks?.signal,
       });
       profile = mergeRunProfile(profile, patch);
@@ -517,13 +418,14 @@ export class Harness {
 
   private async authorizeTools(
     state: LoopState,
+    run: AgentRunRecord,
     invocations: AgentToolInvocation[],
   ): Promise<AgentToolAuthorizationResult> {
     const denied = new Map<string, string>();
 
     for (const hook of this.enterpriseHooks) {
       const decision = await hook.authorizeTools?.({
-        runId: this.runStateMachine.runId,
+        runId: run.runId,
         llmRound: state.llmRounds,
         messages: state.messages,
         invocations,
@@ -589,21 +491,8 @@ export class Harness {
     });
   }
 
-  private async emitRunFinished(
-    outcome: QueryModelOutcome,
-    profile: ResolvedRunProfile,
-  ): Promise<void> {
-    await this.emitEvent({
-      type: "run_finished",
-      runId: this.runStateMachine.runId,
-      finishReason: outcome.finishReason,
-      llmRounds: outcome.llmRounds,
-      stopped: outcome.stopped,
-      stopReason: outcome.stopReason,
-      error: outcome.error,
-      labels: profile.labels,
-      featureFlags: profile.featureFlags,
-    });
+  private async pushEvents(events: AgentRuntimeEvent[]): Promise<void> {
+    await this.recordEvents?.(events);
   }
 
   private async emitEvent(event: AgentHookEvent): Promise<void> {
@@ -625,14 +514,4 @@ function mergeCanonicalTools(
   for (const tool of registryTools) merged.set(tool.name, tool);
   for (const tool of inputTools) merged.set(tool.name, tool);
   return [...merged.values()];
-}
-
-function mergeProviderOptions(
-  current?: Record<string, unknown>,
-  patch?: Record<string, unknown>,
-): Record<string, unknown> | undefined {
-  if (!current && !patch) return undefined;
-  if (!current) return patch ? { ...patch } : undefined;
-  if (!patch) return { ...current };
-  return { ...current, ...patch };
 }

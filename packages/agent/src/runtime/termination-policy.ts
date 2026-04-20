@@ -39,7 +39,9 @@ export class DefaultTerminationPolicy implements TerminationPolicy {
 
   finalStopReason(outcome: QueryModelOutcome): string {
     if (outcome.error) return "error";
-    if (outcome.stopped) return outcome.stopReason ?? "stopped";
+    if (outcome.status === "waiting_permission" || outcome.status === "waiting_input") {
+      return outcome.stopReason ?? outcome.status;
+    }
     return outcome.finishReason;
   }
 }

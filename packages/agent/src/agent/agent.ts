@@ -3,14 +3,13 @@ import { createDefaultLLMClient, type LLMClient } from "@renx/provider";
 import { createDefaultSandboxRegistry } from "../sandbox/default-registry";
 import type { SandboxRegistry } from "../sandbox/sandbox-registry";
 import { ToolRegistry } from "../tools/registry";
-import { AgentRuntime } from "../runtime/agent-runtime";
+import { DefaultContextBuilder, type ContextBuilder } from "../runtime/context-builder";
+import { AgentRuntime, type ResumeRunInput } from "../runtime/agent-runtime";
+import { InMemorySessionStore, type AgentRunRecord, type AgentRuntimeEvent, type AgentSessionStore } from "../runtime/session-store";
+import { DefaultSummaryManager, type SummaryManager } from "../runtime/summary-manager";
 import type { AgentHook } from "./hooks";
 import { noopLogger, type AgentLogger } from "./logger";
-import type {
-  AgentConstructorConfig,
-  QueryModelHooks,
-  QueryModelOutcome,
-} from "./types";
+import type { AgentConstructorConfig, QueryModelHooks, QueryModelOutcome } from "./types";
 
 export type {
   AgentConstructorConfig,
@@ -24,17 +23,25 @@ export type {
 export type { CreateDefaultLLMClientOptions } from "@renx/provider";
 export type { SandboxRegistry } from "../sandbox/sandbox-registry";
 export { createDefaultSandboxRegistry, buildSandboxExecutionContext } from "../sandbox/index";
-export type {
-  AgentCheckpointStore,
-  AgentRunSnapshot,
-  AgentRunStatus,
-  AgentStepSnapshot,
-  AgentStepStatus,
-} from "../runtime/checkpoint-store";
-export { noopCheckpointStore } from "../runtime/checkpoint-store";
+export { ToolRegistry } from "../tools/registry";
 export type { TerminationEvaluation, TerminationPolicy } from "../runtime/termination-policy";
 export { DefaultTerminationPolicy } from "../runtime/termination-policy";
 export { AgentRuntime } from "../runtime/agent-runtime";
+export type { ResumeRunInput } from "../runtime/agent-runtime";
+export type {
+  AgentPendingApproval,
+  AgentPendingInput,
+  AgentRunRecord,
+  AgentRunStatus,
+  AgentRunSummary,
+  AgentRuntimeEvent,
+  AgentSessionStore,
+} from "../runtime/session-store";
+export { InMemorySessionStore } from "../runtime/session-store";
+export type { ContextBuilder } from "../runtime/context-builder";
+export { DefaultContextBuilder } from "../runtime/context-builder";
+export type { SummaryManager } from "../runtime/summary-manager";
+export { DefaultSummaryManager } from "../runtime/summary-manager";
 export type {
   AgentFeatureFlagValue,
   AgentHook,
@@ -70,19 +77,21 @@ export { noopLogger, consoleLogger, type AgentLogger } from "./logger";
 export class Agent {
   protected readonly config: Pick<
     AgentConstructorConfig,
-    "maxSteps" | "llmRetry" | "checkpointStore" | "terminationPolicy"
+    "maxSteps" | "llmRetry" | "terminationPolicy"
   >;
   private readonly llmClient: LLMClient | undefined;
   private readonly registry: ToolRegistry;
   private readonly sandboxRegistry: SandboxRegistry;
   private readonly hooks: AgentHook[] = [];
   private readonly logger: AgentLogger;
+  private readonly sessionStore: AgentSessionStore;
+  private readonly contextBuilder: ContextBuilder;
+  private readonly summaryManager: SummaryManager;
 
   constructor(config: AgentConstructorConfig) {
     this.config = {
       maxSteps: config.maxSteps,
       llmRetry: config.llmRetry,
-      checkpointStore: config.checkpointStore,
       terminationPolicy: config.terminationPolicy,
     };
     this.llmClient =
@@ -90,11 +99,11 @@ export class Agent {
     this.registry = config.registry ?? new ToolRegistry();
     this.sandboxRegistry = config.sandboxRegistry ?? createDefaultSandboxRegistry();
     this.logger = config.logger ?? noopLogger;
+    this.sessionStore = config.sessionStore ?? new InMemorySessionStore();
+    this.contextBuilder = config.contextBuilder ?? new DefaultContextBuilder();
+    this.summaryManager = config.summaryManager ?? new DefaultSummaryManager();
   }
 
-  /**
-   * Register enterprise hooks for permissions, audits, logging, and experiment switches.
-   */
   use(...hooks: AgentHook[]): this {
     for (const hook of hooks) {
       this.hooks.push(hook);
@@ -106,13 +115,44 @@ export class Agent {
     return this.registry;
   }
 
-  /** 当前 Agent 使用的沙箱注册表（可预先 `register` 自定义 profile）。 */
   getSandboxRegistry(): SandboxRegistry {
     return this.sandboxRegistry;
   }
 
-  async queryModel(initial: QueryModelType, hooks?: QueryModelHooks): Promise<QueryModelOutcome> {
-    const runtime = new AgentRuntime({
+  getSessionStore(): AgentSessionStore {
+    return this.sessionStore;
+  }
+
+  async createRun(initial: QueryModelType): Promise<AgentRunRecord> {
+    return this.runtime().createRun(initial);
+  }
+
+  async startRun(runId: string, hooks?: QueryModelHooks): Promise<QueryModelOutcome> {
+    return this.runtime().startRun(runId, hooks);
+  }
+
+  async resumeRun(runId: string, input?: ResumeRunInput, hooks?: QueryModelHooks): Promise<QueryModelOutcome> {
+    return this.runtime().resumeRun(runId, input, hooks);
+  }
+
+  async cancelRun(runId: string): Promise<AgentRunRecord> {
+    return this.runtime().cancelRun(runId);
+  }
+
+  async getRun(runId: string): Promise<AgentRunRecord | null> {
+    return this.runtime().getRun(runId);
+  }
+
+  async getRunTrace(runId: string): Promise<AgentRuntimeEvent[]> {
+    return this.runtime().getRunTrace(runId);
+  }
+
+  async run(initial: QueryModelType, hooks?: QueryModelHooks): Promise<QueryModelOutcome> {
+    return this.runtime().run(initial, hooks);
+  }
+
+  private runtime(): AgentRuntime {
+    return new AgentRuntime({
       maxSteps: this.config.maxSteps,
       registry: this.registry,
       sandboxRegistry: this.sandboxRegistry,
@@ -120,9 +160,10 @@ export class Agent {
       llmRetry: this.config.llmRetry,
       llmClient: this.llmClient,
       logger: this.logger,
-      checkpointStore: this.config.checkpointStore,
+      sessionStore: this.sessionStore,
       terminationPolicy: this.config.terminationPolicy,
+      contextBuilder: this.contextBuilder,
+      summaryManager: this.summaryManager,
     });
-    return runtime.run(initial, hooks);
   }
 }

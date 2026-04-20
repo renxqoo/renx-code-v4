@@ -1,229 +1,48 @@
 /**
- * 01-agent-query.ts — @renx/agent 多轮工具循环 + 流式输出 + 权限确认中间件
+ * 01-agent-query.ts — 高层 `Agent.run()` demo
  *
- * 通过 `queryModel` 第二参数 `onStreamChunk` 在每一轮 LLM 请求时实时输出 token。
- * `get_weather` / `get_time` 调用前会在终端询问是否允许；选 N 将**立即终止**本次 `queryModel`（`onReject: "abort"`）。
- *
- * Run:  pnpm demo:agent
- * Env（二选一）:
- *   - OpenRouter + `openrouter/elephant-alpha`：`OPENROUTER_API_KEY=sk-or-v1-...`
- *   - MiniMax：`MINIMAX_API_KEY=...`
- *
- * LLM 重试：Provider 默认不重试；`Agent` 可配置 `llmRetry`（`isRetryable`、`retryDelayMs` 等）在 Agent 层按需重试。
- * 本 demo：`isRetryable` 对 MiniMax 仍以 529 为主；OpenRouter 同时信任 Provider 的 `retryable`（如 `RetryableError`），
- * 避免只认 529 导致其它可恢复错误不重试。调试：`DEBUG_LLM_RETRY=1` 打印 `code` / `httpStatus`。
+ * Run: pnpm demo:agent
+ * Env:
+ *   - OPENROUTER_API_KEY=...
+ *   - 或 MINIMAX_API_KEY=...
  */
-import * as readline from "node:readline/promises";
-import { stdin as input, stdout as output } from "node:process";
-import { Agent, createPermissionHook } from "@renx/agent";
-import type { CanonicalStreamChunk } from "@renx/provider";
-import { isRetryableLlmError, LLMError, minimax, openai } from "@renx/provider";
-import { z } from "zod";
-
-async function confirmInTerminal(prompt: string): Promise<boolean> {
-  const rl = readline.createInterface({ input, output });
-  const answer = await rl.question(`${prompt} (y/N) `);
-  rl.close();
-  const a = answer.trim().toLowerCase();
-  return a === "y" || a === "yes";
-}
-
-const weatherSchema = z.object({
-  city: z.string().describe("城市名，如 Beijing"),
-});
-
-const timeSchema = z.object({
-  timezone: z.string().describe("IANA 时区，如 Asia/Shanghai"),
-});
-
-const DEMO_MINIMAX_MODEL_ID = "MiniMax-M2.7";
-
-/** OpenRouter 上的模型 slug（经 `openai(...)` 后为 `openai/openrouter/elephant-alpha`）。 */
-const OPENROUTER_ELEPHANT_ALPHA = "openrouter/elephant-alpha";
-
-/** 与 `minimax(id)` / `QueryModelType.model` 对齐，取出裸 modelId。 */
-function minimaxModelIdFromQuery(model: unknown): string {
-  if (typeof model === "string") {
-    return model.startsWith("minimax/") ? model.slice("minimax/".length) : model;
-  }
-  if (model && typeof model === "object" && "modelId" in model) {
-    const id = (model as { modelId: unknown }).modelId;
-    return typeof id === "string" ? id : "";
-  }
-  return "";
-}
-
-function createDemoAgent(options: { useOpenRouter: boolean }) {
-  const { useOpenRouter } = options;
-  const agent = new Agent({
-    maxSteps: 8,
-    llmClientOptions: useOpenRouter
-      ? {
-          vendors: ["openai"],
-          apiKeys: { openai: process.env.OPENROUTER_API_KEY! },
-          baseUrlByVendor: { openai: "https://openrouter.ai/api" },
-        }
-      : undefined,
-    llmRetry: {
-      maxRetries: 10,
-      retryDelayMs: 1000,
-      retryBackoffMultiplier: 2,
-      isRetryable: ({ error, model }) => {
-        if (!LLMError.isInstance(error)) return false;
-        const modelStr = String(model);
-        let allow: boolean;
-        if (useOpenRouter && modelStr.includes(OPENROUTER_ELEPHANT_ALPHA)) {
-          // RetryableError / RATE_LIMIT / 5xx 等：Provider 已标 retryable，勿只认 529
-          allow =
-            isRetryableLlmError(error) ||
-            error.httpStatus === 529 ||
-            (error.httpStatus != null && error.httpStatus >= 500);
-        } else if (minimaxModelIdFromQuery(model) === DEMO_MINIMAX_MODEL_ID) {
-          allow = isRetryableLlmError(error) || error.httpStatus === 529;
-        } else {
-          allow = false;
-        }
-        if (process.env.DEBUG_LLM_RETRY) {
-          console.error("[llmRetry]", {
-            allow,
-            code: error.code,
-            httpStatus: error.httpStatus,
-            retryable: error.retryable,
-            message: error.message,
-          });
-        }
-        return allow;
-      },
-    },
-  });
-  agent.use(
-    createPermissionHook({
-      toolsRequiringConfirmation: ["get_weather", "get_time"],
-      onReject: "abort",
-      rejectReason: "用户未在终端确认工具调用（示例）",
-      confirm: async ({ invocations }) => {
-        console.log("\n--- 权限确认（permission hook）---");
-        for (const inv of invocations) {
-          console.log(`  工具: ${inv.name}  参数: ${JSON.stringify(inv.args)}`);
-        }
-        return confirmInTerminal("是否允许执行以上工具？");
-      },
-    }),
-  )
-  // .use(async (ctx, next) => {
-  //   console.log("before", ctx.event);
-  //   await next();
-  //   console.log("after", ctx.event);
-  // });
-  const reg = agent.getToolRegistry();
-
-  reg.register({
-    id: "get_weather",
-    name: "get_weather",
-    description: "查询给定城市当前天气（示例为模拟数据）",
-    type: "read_only",
-    schema: weatherSchema,
-    execute: async (args) => {
-      const { city } = weatherSchema.parse(args);
-      return {
-        success: true,
-        content: `${city}：25°C，晴（demo 模拟）`,
-        metadata: { city },
-      };
-    },
-  });
-
-  reg.register({
-    id: "get_time",
-    name: "get_time",
-    description: "查询指定 IANA 时区的当前本地时间",
-    type: "read_only",
-    schema: timeSchema,
-    execute: async (args) => {
-      const { timezone } = timeSchema.parse(args);
-      const local = new Date().toLocaleString("zh-CN", { timeZone: timezone });
-      return {
-        success: true,
-        content: `${timezone} 当前时间：${local}`,
-        metadata: { timezone },
-      };
-    },
-  });
-
-  return agent;
-}
-
-function printStreamChunk(chunk: CanonicalStreamChunk) {
-  switch (chunk.type) {
-    case "text-delta":
-      process.stdout.write(chunk.textDelta);
-      break;
-    case "reasoning-delta":
-      process.stderr.write(chunk.reasoningDelta);
-      break;
-    case "tool-call-delta":
-      break;
-    case "finish":
-      process.stdout.write("\n");
-      break;
-  }
-}
+import { buildRealDemoRequest, createRealDemoAgent, printStreamChunk, requireRealAgentEnv } from "./shared/real-demo";
 
 async function run() {
-  const useOpenRouter = Boolean(process.env.OPENROUTER_API_KEY);
-  if (!useOpenRouter && !process.env.MINIMAX_API_KEY) {
-    console.error(
-      "请设置 OPENROUTER_API_KEY（OpenRouter + elephant-alpha）或 MINIMAX_API_KEY 后重试。",
-    );
-    process.exitCode = 1;
-    return;
-  }
+  const { useOpenRouter } = requireRealAgentEnv();
+  const agent = createRealDemoAgent({
+    useOpenRouter,
+    confirmationMode: "terminal",
+  });
 
-  const agent = createDemoAgent({ useOpenRouter });
+  console.log("=== Agent.run（高层 managed runtime 入口）===\n");
+  console.log(`provider: ${useOpenRouter ? "openrouter/openai" : "minimax"}`);
+  console.log("状态: 已发起真实模型请求，正在等待首个流式 chunk...\n");
 
-  console.log("=== Agent.queryModel（流式 + 工具循环）===\n");
-  if (useOpenRouter) {
-    console.log(`模型: OpenRouter / ${OPENROUTER_ELEPHANT_ALPHA}\n`);
-  }
+  let sawFirstChunk = false;
+  const waitingHint = setTimeout(() => {
+    if (!sawFirstChunk) {
+      console.log("提示: 还没收到首个 token，这通常意味着当前还在等待上游模型响应。");
+      console.log("如果你想先验证 SDK 行为，可改跑 `demo:agent-resume` 或 `demo:agent-server`。\n");
+    }
+  }, 5000);
 
-  const out = await agent.queryModel(
-    {
-      model: useOpenRouter ? openai(OPENROUTER_ELEPHANT_ALPHA) : minimax(DEMO_MINIMAX_MODEL_ID),
-      systemPrompt: "你是简洁的中文助手，需要数据时调用工具，最后用一两句话总结。",
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: "北京现在天气怎样？那里现在几点？请用工具查。",
-            },
-          ],
-        },
-      ],
-      toolChoice: "auto",
-      temperature: 0.2,
-      ...(useOpenRouter
-        ? {}
-        : {
-            providerOptions: {
-              minimax: { reasoning_split: true },
-            },
-          }),
+  const out = await agent.run(buildRealDemoRequest(useOpenRouter), {
+    onStreamChunk: (chunk) => {
+      sawFirstChunk = true;
+      printStreamChunk(chunk);
     },
-    { onStreamChunk: printStreamChunk },
-  );
+  });
+  clearTimeout(waitingHint);
 
-  // if (out.error) {
-  //   console.error("\nerror:", out.error);
-  // }
-
-  // console.log("\n--- 元信息 ---");
-  // console.log("finishReason:", out.finishReason);
-  // console.log("llmRounds:", out.llmRounds);
-
-  // console.log("\n--- 最终对话 messages（JSON）---\n");
-  // console.log(JSON.stringify(out.messages, null, 2));
+  console.log("\n--- 最终状态 ---");
+  console.log({
+    runId: out.runId,
+    status: out.status,
+    finishReason: out.finishReason,
+    llmRounds: out.llmRounds,
+    stopReason: out.stopReason,
+  });
 }
 
 run().catch(console.error);
