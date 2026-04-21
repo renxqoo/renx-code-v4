@@ -11,6 +11,9 @@ import type { ContextBuilder } from "./context-builder";
 import { DefaultContextBuilder } from "./context-builder";
 import { Harness, type HarnessOutcome } from "./harness";
 import type {
+  AgentEventQuery,
+  AgentRunLease,
+  AgentRunQuery,
   AgentPendingApproval,
   AgentRunRecord,
   AgentRuntimeEvent,
@@ -19,6 +22,8 @@ import type {
 import { InMemorySessionStore } from "./session-store";
 import type { SummaryManager } from "./summary-manager";
 import { DefaultSummaryManager } from "./summary-manager";
+import type { AgentTelemetrySink } from "./telemetry";
+import { noopTelemetry } from "./telemetry";
 import type { TerminationPolicy } from "./termination-policy";
 import { DefaultTerminationPolicy } from "./termination-policy";
 
@@ -39,6 +44,7 @@ export type AgentRuntimeConfig = {
   terminationPolicy?: TerminationPolicy;
   contextBuilder?: ContextBuilder;
   summaryManager?: SummaryManager;
+  telemetry?: AgentTelemetrySink;
 };
 
 function nowIso(): string {
@@ -51,6 +57,7 @@ export class AgentRuntime {
   private readonly terminationPolicy: TerminationPolicy;
   private readonly contextBuilder: ContextBuilder;
   private readonly summaryManager: SummaryManager;
+  private readonly telemetry: AgentTelemetrySink;
 
   constructor(private readonly config: AgentRuntimeConfig) {
     this.logger = config.logger ?? noopLogger;
@@ -58,6 +65,7 @@ export class AgentRuntime {
     this.terminationPolicy = config.terminationPolicy ?? new DefaultTerminationPolicy();
     this.contextBuilder = config.contextBuilder ?? new DefaultContextBuilder();
     this.summaryManager = config.summaryManager ?? new DefaultSummaryManager();
+    this.telemetry = config.telemetry ?? noopTelemetry;
   }
 
   async createRun(initial: QueryModelType): Promise<AgentRunRecord> {
@@ -83,6 +91,13 @@ export class AgentRuntime {
         maxSteps: this.config.maxSteps,
       },
     ]);
+    await this.captureTelemetry({
+      name: "run_created",
+      at: timestamp,
+      runId: run.runId,
+      status: run.status,
+      metadata: { model: initial.model, maxSteps: this.config.maxSteps },
+    });
 
     return run;
   }
@@ -121,6 +136,13 @@ export class AgentRuntime {
         status: nextRun.status,
       },
     ]);
+    await this.captureTelemetry({
+      name: "run_started",
+      at: timestamp,
+      runId,
+      status: nextRun.status,
+      metadata: { resumed: run.status !== "ready" },
+    });
 
     return this.executeRun(nextRun, hooks);
   }
@@ -184,6 +206,13 @@ export class AgentRuntime {
         stopReason: "cancelled",
       },
     ]);
+    await this.captureTelemetry({
+      name: "run_cancelled",
+      at: timestamp,
+      runId,
+      status: nextRun.status,
+      finishReason: "stop",
+    });
     return nextRun;
   }
 
@@ -191,8 +220,54 @@ export class AgentRuntime {
     return this.sessionStore.getRun(runId);
   }
 
-  async getRunTrace(runId: string): Promise<AgentRuntimeEvent[]> {
-    return this.sessionStore.listEvents(runId);
+  async listRuns(query?: AgentRunQuery): Promise<AgentRunRecord[]> {
+    return this.sessionStore.listRuns(query);
+  }
+
+  async getRunTrace(runId: string, query?: AgentEventQuery): Promise<AgentRuntimeEvent[]> {
+    return this.sessionStore.listEvents(runId, query);
+  }
+
+  async getRunLease(runId: string): Promise<AgentRunLease | null> {
+    return this.sessionStore.getLease(runId);
+  }
+
+  async acquireRunLease(runId: string, ownerId: string, ttlMs: number): Promise<AgentRunLease | null> {
+    const lease = await this.sessionStore.acquireLease(runId, ownerId, ttlMs);
+    if (lease) {
+      await this.captureTelemetry({
+        name: "lease_acquired",
+        at: nowIso(),
+        runId,
+        ownerId,
+        metadata: { ttlMs },
+      });
+    }
+    return lease;
+  }
+
+  async renewRunLease(runId: string, ownerId: string, ttlMs: number): Promise<AgentRunLease | null> {
+    const lease = await this.sessionStore.renewLease(runId, ownerId, ttlMs);
+    if (lease) {
+      await this.captureTelemetry({
+        name: "lease_renewed",
+        at: nowIso(),
+        runId,
+        ownerId,
+        metadata: { ttlMs },
+      });
+    }
+    return lease;
+  }
+
+  async releaseRunLease(runId: string, ownerId: string): Promise<void> {
+    await this.sessionStore.releaseLease(runId, ownerId);
+    await this.captureTelemetry({
+      name: "lease_released",
+      at: nowIso(),
+      runId,
+      ownerId,
+    });
   }
 
   private async executeRun(run: AgentRunRecord, hooks?: QueryModelHooks): Promise<QueryModelOutcome> {
@@ -219,6 +294,7 @@ export class AgentRuntime {
       terminationPolicy: this.terminationPolicy,
       contextBuilder: this.contextBuilder,
       summaryManager: this.summaryManager,
+      telemetry: this.telemetry,
       recordEvents: async (events) => {
         if (events.length > 0) {
           await this.sessionStore.appendEvents(liveRun.runId, events);
@@ -232,6 +308,14 @@ export class AgentRuntime {
       const finalRun = this.applyOutcomeToRun(liveRun, outcome);
       await this.sessionStore.saveRun(finalRun);
       await this.sessionStore.appendEvents(finalRun.runId, this.finalEvents(finalRun, outcome));
+      await this.captureTelemetry({
+        name: outcome.status === "waiting_input" || outcome.status === "waiting_permission" ? "run_waiting" : "run_finished",
+        at: nowIso(),
+        runId: finalRun.runId,
+        status: finalRun.status,
+        finishReason: outcome.finishReason,
+        metadata: outcome.stopReason ? { stopReason: outcome.stopReason } : undefined,
+      });
       return outcome;
     } catch (error) {
       const timestamp = nowIso();
@@ -255,6 +339,14 @@ export class AgentRuntime {
           error,
         },
       ]);
+      await this.captureTelemetry({
+        name: "run_finished",
+        at: timestamp,
+        runId: failedRun.runId,
+        status: failedRun.status,
+        finishReason: "error",
+        metadata: { stopReason: "fatal_error" },
+      });
       return {
         runId: failedRun.runId,
         status: failedRun.status,
@@ -369,5 +461,16 @@ export class AgentRuntime {
       throw new Error(`Run not found: ${runId}`);
     }
     return run;
+  }
+
+  private async captureTelemetry(event: import("./telemetry").AgentTelemetryEvent): Promise<void> {
+    try {
+      await this.telemetry.capture(event);
+    } catch (error) {
+      this.logger.warn("agentTelemetryFailed", {
+        eventName: event.name,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 }

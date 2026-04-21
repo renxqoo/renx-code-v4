@@ -14,6 +14,7 @@ import type { AgentLogger } from "./logger";
 import type { ContextBuilder } from "../runtime/context-builder";
 import type { AgentSessionStore, AgentPendingApproval, AgentRunStatus, AgentRunSummary } from "../runtime/session-store";
 import type { SummaryManager } from "../runtime/summary-manager";
+import type { AgentTelemetrySink } from "../runtime/telemetry";
 import type { TerminationPolicy } from "../runtime/termination-policy";
 
 /** 供 `llmRetry.isRetryable` 判断本次失败是否值得再发起一次 `runtime`。 */
@@ -73,6 +74,8 @@ export type AgentConstructorConfig = {
   summaryManager?: SummaryManager;
   /** Optional termination policy override. */
   terminationPolicy?: TerminationPolicy;
+  /** Optional telemetry sink for lifecycle metrics and worker coordination. */
+  telemetry?: AgentTelemetrySink;
 };
 
 export type QueryModelOutcome = {

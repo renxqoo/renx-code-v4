@@ -9,6 +9,7 @@ import { AgentRuntime } from "../runtime/agent-runtime";
 import type { ContextBuilder } from "../runtime/context-builder";
 import type { AgentSessionStore } from "../runtime/session-store";
 import type { SummaryManager } from "../runtime/summary-manager";
+import type { AgentTelemetrySink } from "../runtime/telemetry";
 import type { TerminationPolicy } from "../runtime/termination-policy";
 
 export type RunQueryModelLoopParams = {
@@ -25,6 +26,7 @@ export type RunQueryModelLoopParams = {
   terminationPolicy?: TerminationPolicy;
   contextBuilder?: ContextBuilder;
   summaryManager?: SummaryManager;
+  telemetry?: AgentTelemetrySink;
 };
 
 export async function runQueryModelLoop(params: RunQueryModelLoopParams): Promise<QueryModelOutcome> {
@@ -40,6 +42,7 @@ export async function runQueryModelLoop(params: RunQueryModelLoopParams): Promis
     terminationPolicy: params.terminationPolicy,
     contextBuilder: params.contextBuilder,
     summaryManager: params.summaryManager,
+    telemetry: params.telemetry,
   });
 
   return runtime.run(params.initial, params.hooks);

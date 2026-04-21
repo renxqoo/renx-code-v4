@@ -6,3 +6,6 @@ coverage
 .turbo
 .cache
 *.tsbuildinfo
+
+# Local demo runtime state (session files, etc.)
+.demo-state/

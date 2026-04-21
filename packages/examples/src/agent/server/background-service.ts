@@ -168,6 +168,7 @@ export class BackgroundAgentService {
   readonly queue = new InMemoryRunQueue();
   readonly sessionStore = new InMemorySessionStore();
   private readonly approvedRuns = new Set<string>();
+  private readonly knownRunIds = new Set<string>();
   private readonly runtime: AgentRuntime;
   private workerRunning = false;
 
@@ -207,8 +208,14 @@ export class BackgroundAgentService {
       toolChoice: "auto",
       temperature: 0,
     });
+    this.knownRunIds.add(run.runId);
     this.queue.enqueue(run.runId);
     return run;
+  }
+
+  async listRuns(): Promise<AgentRunRecord[]> {
+    const runs = await Promise.all([...this.knownRunIds].map((runId) => this.runtime.getRun(runId)));
+    return runs.filter((run): run is AgentRunRecord => run != null);
   }
 
   async getRun(runId: string): Promise<AgentRunRecord | null> {

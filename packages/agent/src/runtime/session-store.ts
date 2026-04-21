@@ -132,12 +132,46 @@ export type AgentRunRecord = {
   finishedAt?: string;
 };
 
+export type AgentEventQuery = {
+  offset?: number;
+  limit?: number;
+};
+
+export type AgentRunQuery = {
+  statuses?: AgentRunStatus[];
+  offset?: number;
+  limit?: number;
+};
+
+export type AgentRunLease = {
+  runId: string;
+  ownerId: string;
+  acquiredAt: string;
+  expiresAt: string;
+};
+
+function sliceRuns(runs: AgentRunRecord[], query?: AgentRunQuery): AgentRunRecord[] {
+  const statuses = query?.statuses?.length ? new Set(query.statuses) : undefined;
+  const filtered = statuses ? runs.filter((run) => statuses.has(run.status)) : runs;
+  const sorted = [...filtered].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const offset = Math.max(0, query?.offset ?? 0);
+  const limit = query?.limit;
+  return sorted
+    .slice(offset, limit == null ? undefined : offset + Math.max(0, limit))
+    .map((run) => cloneRunRecord(run));
+}
+
 export interface AgentSessionStore {
   createRun(run: AgentRunRecord): Promise<void>;
   saveRun(run: AgentRunRecord): Promise<void>;
   getRun(runId: string): Promise<AgentRunRecord | null>;
+  listRuns(query?: AgentRunQuery): Promise<AgentRunRecord[]>;
   appendEvents(runId: string, events: AgentRuntimeEvent[]): Promise<void>;
-  listEvents(runId: string): Promise<AgentRuntimeEvent[]>;
+  listEvents(runId: string, query?: AgentEventQuery): Promise<AgentRuntimeEvent[]>;
+  getLease(runId: string): Promise<AgentRunLease | null>;
+  acquireLease(runId: string, ownerId: string, ttlMs: number): Promise<AgentRunLease | null>;
+  renewLease(runId: string, ownerId: string, ttlMs: number): Promise<AgentRunLease | null>;
+  releaseLease(runId: string, ownerId: string): Promise<void>;
 }
 
 function cloneRunRecord(run: AgentRunRecord): AgentRunRecord {
@@ -148,9 +182,17 @@ function cloneEvent(event: AgentRuntimeEvent): AgentRuntimeEvent {
   return cloneContextValue(event);
 }
 
+function sliceEvents(events: AgentRuntimeEvent[], query?: AgentEventQuery): AgentRuntimeEvent[] {
+  const offset = Math.max(0, query?.offset ?? 0);
+  const limit = query?.limit;
+  const sliced = events.slice(offset, limit == null ? undefined : offset + Math.max(0, limit));
+  return sliced.map((event) => cloneEvent(event));
+}
+
 export class InMemorySessionStore implements AgentSessionStore {
   private readonly runs = new Map<string, AgentRunRecord>();
   private readonly events = new Map<string, AgentRuntimeEvent[]>();
+  private readonly leases = new Map<string, AgentRunLease>();
 
   async createRun(run: AgentRunRecord): Promise<void> {
     this.runs.set(run.runId, cloneRunRecord(run));
@@ -171,13 +213,65 @@ export class InMemorySessionStore implements AgentSessionStore {
     return run ? cloneRunRecord(run) : null;
   }
 
+  async listRuns(query?: AgentRunQuery): Promise<AgentRunRecord[]> {
+    return sliceRuns([...this.runs.values()], query);
+  }
+
   async appendEvents(runId: string, events: AgentRuntimeEvent[]): Promise<void> {
     const current = this.events.get(runId) ?? [];
     current.push(...events.map((event) => cloneEvent(event)));
     this.events.set(runId, current);
   }
 
-  async listEvents(runId: string): Promise<AgentRuntimeEvent[]> {
-    return (this.events.get(runId) ?? []).map((event) => cloneEvent(event));
+  async listEvents(runId: string, query?: AgentEventQuery): Promise<AgentRuntimeEvent[]> {
+    return sliceEvents(this.events.get(runId) ?? [], query);
+  }
+
+  async getLease(runId: string): Promise<AgentRunLease | null> {
+    const lease = this.leases.get(runId);
+    if (!lease) return null;
+    if (Date.parse(lease.expiresAt) <= Date.now()) {
+      this.leases.delete(runId);
+      return null;
+    }
+    return cloneContextValue(lease);
+  }
+
+  async acquireLease(runId: string, ownerId: string, ttlMs: number): Promise<AgentRunLease | null> {
+    const current = await this.getLease(runId);
+    if (current && current.ownerId !== ownerId) {
+      return null;
+    }
+    const now = new Date();
+    const lease: AgentRunLease = {
+      runId,
+      ownerId,
+      acquiredAt: current?.acquiredAt ?? now.toISOString(),
+      expiresAt: new Date(now.getTime() + Math.max(1, ttlMs)).toISOString(),
+    };
+    this.leases.set(runId, lease);
+    return cloneContextValue(lease);
+  }
+
+  async renewLease(runId: string, ownerId: string, ttlMs: number): Promise<AgentRunLease | null> {
+    const current = await this.getLease(runId);
+    if (!current || current.ownerId !== ownerId) {
+      return null;
+    }
+    const now = new Date();
+    const renewed: AgentRunLease = {
+      ...current,
+      expiresAt: new Date(now.getTime() + Math.max(1, ttlMs)).toISOString(),
+    };
+    this.leases.set(runId, renewed);
+    return cloneContextValue(renewed);
+  }
+
+  async releaseLease(runId: string, ownerId: string): Promise<void> {
+    const current = await this.getLease(runId);
+    if (!current || current.ownerId !== ownerId) {
+      return;
+    }
+    this.leases.delete(runId);
   }
 }

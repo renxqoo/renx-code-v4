@@ -5,11 +5,31 @@ import type { SandboxRegistry } from "../sandbox/sandbox-registry";
 import { ToolRegistry } from "../tools/registry";
 import { DefaultContextBuilder, type ContextBuilder } from "../runtime/context-builder";
 import { AgentRuntime, type ResumeRunInput } from "../runtime/agent-runtime";
-import { InMemorySessionStore, type AgentRunRecord, type AgentRuntimeEvent, type AgentSessionStore } from "../runtime/session-store";
+import { FileSessionStore } from "../runtime/file-session-store";
+import { PostgresSessionStore } from "../runtime/postgres-session-store";
+import {
+  InMemorySessionStore,
+  type AgentEventQuery,
+  type AgentRunLease,
+  type AgentRunQuery,
+  type AgentRunRecord,
+  type AgentRuntimeEvent,
+  type AgentSessionStore,
+} from "../runtime/session-store";
 import { DefaultSummaryManager, type SummaryManager } from "../runtime/summary-manager";
+import { noopTelemetry, type AgentTelemetrySink, type AgentTelemetryEvent } from "../runtime/telemetry";
+import { OpenTelemetrySink, type OpenTelemetrySinkOptions } from "../runtime/otel";
 import type { AgentHook } from "./hooks";
 import { noopLogger, type AgentLogger } from "./logger";
 import type { AgentConstructorConfig, QueryModelHooks, QueryModelOutcome } from "./types";
+import { AgentWorker, type AgentWorkerConfig } from "./worker";
+export { createMcpTool } from "../tools/mcp";
+export type {
+  CreateMcpToolOptions,
+  McpCallToolRequest,
+  McpCallToolResponse,
+  McpToolClient,
+} from "../tools/mcp";
 
 export type {
   AgentConstructorConfig,
@@ -28,9 +48,14 @@ export type { TerminationEvaluation, TerminationPolicy } from "../runtime/termin
 export { DefaultTerminationPolicy } from "../runtime/termination-policy";
 export { AgentRuntime } from "../runtime/agent-runtime";
 export type { ResumeRunInput } from "../runtime/agent-runtime";
+export { FileSessionStore } from "../runtime/file-session-store";
+export { PostgresSessionStore } from "../runtime/postgres-session-store";
 export type {
+  AgentEventQuery,
+  AgentRunLease,
   AgentPendingApproval,
   AgentPendingInput,
+  AgentRunQuery,
   AgentRunRecord,
   AgentRunStatus,
   AgentRunSummary,
@@ -42,6 +67,12 @@ export type { ContextBuilder } from "../runtime/context-builder";
 export { DefaultContextBuilder } from "../runtime/context-builder";
 export type { SummaryManager } from "../runtime/summary-manager";
 export { DefaultSummaryManager } from "../runtime/summary-manager";
+export type { AgentTelemetryEvent, AgentTelemetrySink } from "../runtime/telemetry";
+export { noopTelemetry } from "../runtime/telemetry";
+export type { OpenTelemetrySinkOptions } from "../runtime/otel";
+export { OpenTelemetrySink } from "../runtime/otel";
+export { AgentWorker } from "./worker";
+export type { AgentWorkerConfig, AgentWorkerDecision } from "./worker";
 export type {
   AgentFeatureFlagValue,
   AgentHook,
@@ -87,6 +118,7 @@ export class Agent {
   private readonly sessionStore: AgentSessionStore;
   private readonly contextBuilder: ContextBuilder;
   private readonly summaryManager: SummaryManager;
+  private readonly telemetry: AgentTelemetrySink;
 
   constructor(config: AgentConstructorConfig) {
     this.config = {
@@ -102,6 +134,7 @@ export class Agent {
     this.sessionStore = config.sessionStore ?? new InMemorySessionStore();
     this.contextBuilder = config.contextBuilder ?? new DefaultContextBuilder();
     this.summaryManager = config.summaryManager ?? new DefaultSummaryManager();
+    this.telemetry = config.telemetry ?? noopTelemetry;
   }
 
   use(...hooks: AgentHook[]): this {
@@ -143,12 +176,41 @@ export class Agent {
     return this.runtime().getRun(runId);
   }
 
-  async getRunTrace(runId: string): Promise<AgentRuntimeEvent[]> {
-    return this.runtime().getRunTrace(runId);
+  async listRuns(query?: AgentRunQuery): Promise<AgentRunRecord[]> {
+    return this.runtime().listRuns(query);
+  }
+
+  async getRunTrace(runId: string, query?: AgentEventQuery): Promise<AgentRuntimeEvent[]> {
+    return this.runtime().getRunTrace(runId, query);
+  }
+
+  async getRunLease(runId: string): Promise<AgentRunLease | null> {
+    return this.runtime().getRunLease(runId);
+  }
+
+  async acquireRunLease(runId: string, ownerId: string, ttlMs: number): Promise<AgentRunLease | null> {
+    return this.runtime().acquireRunLease(runId, ownerId, ttlMs);
+  }
+
+  async renewRunLease(runId: string, ownerId: string, ttlMs: number): Promise<AgentRunLease | null> {
+    return this.runtime().renewRunLease(runId, ownerId, ttlMs);
+  }
+
+  async releaseRunLease(runId: string, ownerId: string): Promise<void> {
+    return this.runtime().releaseRunLease(runId, ownerId);
   }
 
   async run(initial: QueryModelType, hooks?: QueryModelHooks): Promise<QueryModelOutcome> {
     return this.runtime().run(initial, hooks);
+  }
+
+  createWorker(config: Omit<AgentWorkerConfig, "runtime" | "logger" | "telemetry"> = {}): AgentWorker {
+    return new AgentWorker({
+      ...config,
+      runtime: this.runtime(),
+      logger: this.logger,
+      telemetry: this.telemetry,
+    });
   }
 
   private runtime(): AgentRuntime {
@@ -164,6 +226,7 @@ export class Agent {
       terminationPolicy: this.config.terminationPolicy,
       contextBuilder: this.contextBuilder,
       summaryManager: this.summaryManager,
+      telemetry: this.telemetry,
     });
   }
 }

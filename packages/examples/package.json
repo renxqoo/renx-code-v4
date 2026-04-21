@@ -20,7 +20,9 @@
     "demo:agent-resume": "tsx src/agent/03-runtime-resume-permission.ts",
     "demo:agent-cancel": "tsx src/agent/04-runtime-cancel-run.ts",
     "demo:agent-worker": "tsx src/agent/05-runtime-background-worker.ts",
-    "demo:agent-server": "tsx src/agent/06-queue-worker-primitives.ts"
+    "demo:agent-server": "tsx src/agent/06-queue-worker-primitives.ts",
+    "demo:agent-worker-daemon": "tsx src/agent/07-worker-daemon.ts",
+    "demo:agent-enterprise": "tsx src/agent/08-enterprise-managed-demo.ts"
   },
   "dependencies": {
     "@renx/agent": "workspace:*",

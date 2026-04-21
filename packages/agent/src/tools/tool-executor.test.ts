@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { toolExecutor } from "./tool-executor";
 import { createDefaultSandboxRegistry } from "../sandbox/default-registry";
+import { HttpSandboxBackend } from "../sandbox/backends/http";
 import type { AgentTool } from "./type";
 import zod from "zod";
 
@@ -142,5 +143,36 @@ describe("toolExecutor", () => {
     );
 
     expect(results[0].success).toBe(true);
+  });
+
+  it("routes execution to a registered remote sandbox backend", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true, content: "remote", metadata: { profile: "remote" } }), {
+        status: 200,
+      }),
+    );
+    const sandbox = createDefaultSandboxRegistry().register(
+      "remote",
+      new HttpSandboxBackend({
+        endpoint: "https://sandbox.example/execute",
+        fetch: fetchMock as typeof fetch,
+      }),
+    );
+    const tool = makeTool({ id: "t1", name: "echo", type: "read_only", sandboxProfileId: "remote" });
+
+    const results = await toolExecutor(
+      [{ tool, args: { value: "hello" }, callId: "c1" }],
+      {
+        sandboxRegistry: sandbox,
+        getSandboxContext: () => ({ profileId: "remote", traceId: "trace-1" }),
+      },
+    );
+
+    expect(results[0]).toEqual({
+      success: true,
+      content: "remote",
+      metadata: { profile: "remote" },
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 });

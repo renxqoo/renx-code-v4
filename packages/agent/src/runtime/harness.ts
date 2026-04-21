@@ -3,6 +3,7 @@ import type { LLMClient } from "@renx/provider";
 import {
   createDefaultRunProfile,
   mergeRunProfile,
+  type AgentFeatureFlagValue,
   type AgentHook,
   type AgentHookEvent,
   type AgentToolAuthorizationResult,
@@ -38,6 +39,8 @@ import type {
   AgentRuntimeEvent,
 } from "./session-store";
 import type { SummaryManager } from "./summary-manager";
+import type { AgentTelemetrySink } from "./telemetry";
+import { noopTelemetry } from "./telemetry";
 import type { TerminationPolicy } from "./termination-policy";
 import { ToolRuntime } from "./tool-runtime";
 
@@ -53,6 +56,7 @@ type HarnessDependencies = {
   terminationPolicy: TerminationPolicy;
   contextBuilder: ContextBuilder;
   summaryManager: SummaryManager;
+  telemetry?: AgentTelemetrySink;
   recordEvents?: (events: AgentRuntimeEvent[]) => Promise<void>;
   persistRun?: (patch: Partial<AgentRunRecord>) => Promise<void>;
 };
@@ -104,6 +108,7 @@ export class Harness {
   private readonly toolRuntime: ToolRuntime;
   private readonly contextBuilder: ContextBuilder;
   private readonly summaryManager: SummaryManager;
+  private readonly telemetry: AgentTelemetrySink;
   private readonly recordEvents?: (events: AgentRuntimeEvent[]) => Promise<void>;
   private readonly persistRun?: (patch: Partial<AgentRunRecord>) => Promise<void>;
 
@@ -119,6 +124,7 @@ export class Harness {
     this.toolRuntime = new ToolRuntime(deps.registry, deps.sandboxRegistry, this.logger);
     this.contextBuilder = deps.contextBuilder;
     this.summaryManager = deps.summaryManager;
+    this.telemetry = deps.telemetry ?? noopTelemetry;
     this.recordEvents = deps.recordEvents;
     this.persistRun = deps.persistRun;
   }
@@ -126,11 +132,18 @@ export class Harness {
   async run(run: AgentRunRecord): Promise<HarnessOutcome> {
     const state = initLoopState(run, this.llmRetry);
     state.profile = await this.resolveRunProfile(run);
+    await this.emitEvent({
+      type: "run_started",
+      runId: run.runId,
+      maxSteps: this.maxSteps,
+      model: state.profile.overrides.model ?? run.initial.model,
+      ...this.hookContext(state.profile),
+    });
 
     while (true) {
       if (state.llmRounds >= this.maxSteps) {
         const finishReason = await state.lastStream.finishReason;
-        return {
+        const outcome: HarnessOutcome = {
           runId: run.runId,
           status: "failed",
           messages: state.messages,
@@ -141,9 +154,18 @@ export class Harness {
           error: new Error(`maxSteps (${this.maxSteps}) exceeded`),
           stopReason: "max_steps",
         };
+        await this.emitTerminalEvent(outcome, state.profile);
+        return outcome;
       }
 
       state.llmRounds++;
+      await this.emitEvent({
+        type: "step_started",
+        runId: run.runId,
+        llmRound: state.llmRounds,
+        messageCount: state.messages.length,
+        ...this.hookContext(state.profile),
+      });
       await this.pushEvents([
         {
           type: "step_started",
@@ -162,6 +184,7 @@ export class Harness {
       let usage: Awaited<RuntimeOutcome["usage"]>;
 
       modelAttemptLoop: while (true) {
+        const modelStartedAt = Date.now();
         const tools = mergeCanonicalTools(toolsToCanonical(this.registry.list()), run.initial.tools);
         const streamConfig = await this.contextBuilder.build({
           run: {
@@ -172,6 +195,15 @@ export class Harness {
           },
           profile: state.profile,
           tools,
+        });
+        await this.emitEvent({
+          type: "model_started",
+          runId: run.runId,
+          llmRound: state.llmRounds,
+          model: streamConfig.model,
+          toolCount: tools?.length ?? 0,
+          messageCount: state.messages.length,
+          ...this.hookContext(state.profile),
         });
 
         this.logger.debug("modelCall", {
@@ -218,6 +250,32 @@ export class Harness {
             error: outcome.ok ? undefined : outcome.error,
           },
         ]);
+        await this.emitEvent({
+          type: "model_completed",
+          runId: run.runId,
+          llmRound: state.llmRounds,
+          ok: outcome.ok,
+          finishReason,
+          assistantText,
+          toolCalls: calls,
+          usage,
+          error: outcome.ok ? undefined : outcome.error,
+          ...this.hookContext(state.profile),
+        });
+        await this.captureTelemetry({
+          name: "model_completed",
+          at: new Date().toISOString(),
+          runId: run.runId,
+          llmRound: state.llmRounds,
+          durationMs: Date.now() - modelStartedAt,
+          finishReason,
+          success: outcome.ok,
+          metadata: {
+            toolCallCount: calls.length,
+            usage,
+            model: streamConfig.model,
+          },
+        });
 
         if (outcome.ok) break modelAttemptLoop;
 
@@ -257,7 +315,7 @@ export class Harness {
       });
 
       if (decision.type === "error") {
-        return {
+        const failure: HarnessOutcome = {
           runId: run.runId,
           status: "failed",
           messages: state.messages,
@@ -268,13 +326,15 @@ export class Harness {
           error: decision.error,
           stopReason: "model_error",
         };
+        await this.emitTerminalEvent(failure, state.profile);
+        return failure;
       }
 
       if (decision.type === "final_answer") {
         state.messages = appendAssistantTextOnly(state.messages, decision.assistantText);
         await this.refreshSummary(run, state);
         await this.persistProgress(run, state);
-        return {
+        const finalOutcome: HarnessOutcome = {
           runId: run.runId,
           status: "finished",
           messages: state.messages,
@@ -283,6 +343,8 @@ export class Harness {
           llmRounds: state.llmRounds,
           lastStream: outcome,
         };
+        await this.emitTerminalEvent(finalOutcome, state.profile);
+        return finalOutcome;
       }
 
       state.messages = appendAssistantToolRound(state.messages, decision.assistantText, decision.toolCalls);
@@ -292,11 +354,27 @@ export class Harness {
         name: invocation.tool.name,
         args: invocation.args,
       }));
+      await this.emitEvent({
+        type: "tool_authorization_requested",
+        runId: run.runId,
+        llmRound: state.llmRounds,
+        invocations: hookInvocations,
+        ...this.hookContext(state.profile),
+      });
 
       const authorization = await this.authorizeTools(state, run, hookInvocations);
+      await this.emitEvent({
+        type: "tool_authorization_resolved",
+        runId: run.runId,
+        llmRound: state.llmRounds,
+        action: authorization.action,
+        deniedCallIds: authorization.action === "deny" ? authorization.callIds : undefined,
+        reason: "reason" in authorization ? authorization.reason : undefined,
+        ...this.hookContext(state.profile),
+      });
 
       if (authorization.action === "abort") {
-        return {
+        const failure: HarnessOutcome = {
           runId: run.runId,
           status: "failed",
           messages: state.messages,
@@ -307,6 +385,8 @@ export class Harness {
           error: new Error(authorization.reason),
           stopReason: authorization.reason,
         };
+        await this.emitTerminalEvent(failure, state.profile);
+        return failure;
       }
 
       if (authorization.action === "pause") {
@@ -328,8 +408,28 @@ export class Harness {
         };
       }
 
+      const toolStartedAt = Date.now();
       const results = await this.executeAuthorizedTools(invocations, authorization, state.profile);
       state.messages = appendToolResultMessages(state.messages, decision.toolCalls, results);
+      await this.emitEvent({
+        type: "tool_completed",
+        runId: run.runId,
+        llmRound: state.llmRounds,
+        results,
+        ...this.hookContext(state.profile),
+      });
+      await this.captureTelemetry({
+        name: "tool_completed",
+        at: new Date().toISOString(),
+        runId: run.runId,
+        llmRound: state.llmRounds,
+        durationMs: Date.now() - toolStartedAt,
+        toolCount: results.length,
+        success: results.every((result) => result.success),
+        metadata: {
+          tools: decision.toolCalls.map((toolCall) => toolCall.name),
+        },
+      });
 
       await this.pushEvents([
         {
@@ -351,7 +451,7 @@ export class Harness {
       await this.persistProgress(run, state);
 
       if (termination.shouldStop) {
-        return {
+        const terminalOutcome: HarnessOutcome = {
           runId: run.runId,
           status: termination.error ? "failed" : "finished",
           messages: state.messages,
@@ -362,6 +462,8 @@ export class Harness {
           error: termination.error,
           stopReason: termination.reason,
         };
+        await this.emitTerminalEvent(terminalOutcome, state.profile);
+        return terminalOutcome;
       }
     }
   }
@@ -495,9 +597,54 @@ export class Harness {
     await this.recordEvents?.(events);
   }
 
+  private hookContext(profile: ResolvedRunProfile): {
+    labels: Record<string, string>;
+    featureFlags: Record<string, AgentFeatureFlagValue>;
+  } {
+    return {
+      labels: profile.labels,
+      featureFlags: profile.featureFlags,
+    };
+  }
+
+  private async emitTerminalEvent(outcome: HarnessOutcome, profile: ResolvedRunProfile): Promise<void> {
+    if (outcome.status !== "finished" && outcome.status !== "failed") {
+      return;
+    }
+    await this.emitEvent({
+      type: "run_finished",
+      runId: outcome.runId,
+      finishReason: outcome.finishReason,
+      llmRounds: outcome.llmRounds,
+      stopped: outcome.stopReason != null,
+      stopReason: outcome.stopReason,
+      error: outcome.error,
+      ...this.hookContext(profile),
+    });
+  }
+
   private async emitEvent(event: AgentHookEvent): Promise<void> {
     for (const hook of this.enterpriseHooks) {
-      await hook.onEvent?.(event);
+      try {
+        await hook.onEvent?.(event);
+      } catch (error) {
+        this.logger.warn("agentHookEventFailed", {
+          hookName: hook.name ?? "anonymous",
+          eventType: event.type,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
+  private async captureTelemetry(event: import("./telemetry").AgentTelemetryEvent): Promise<void> {
+    try {
+      await this.telemetry.capture(event);
+    } catch (error) {
+      this.logger.warn("agentTelemetryFailed", {
+        eventName: event.name,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 }
