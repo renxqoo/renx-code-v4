@@ -103,11 +103,14 @@ async function main() {
     maxSteps: 5,
   })) {
     switch (event.type) {
+      case "llm:delta":
+        process.stdout.write(event.delta);
+        break;
       case "llm:tool-call":
-        console.log(`  [llm:tool-call] ${event.name}(${JSON.stringify(event.arguments)})`);
+        console.log(`\n  [llm:tool-call] ${event.name}(${JSON.stringify(event.arguments)})`);
         break;
       case "tool:start":
-        console.log(`  [tool:start]     ${event.name}`);
+        console.log(`\n  [tool:start]     ${event.name}`);
         break;
       case "tool:result":
         console.log(`  [tool:result]    ${event.callId} ok=${event.ok} duration=${event.durationMs}ms`);
@@ -116,6 +119,9 @@ async function main() {
         console.log(`  [tool:error]    ${event.callId} → ${event.error}`);
         break;
       case "run:finished":
+        console.log(`\n\n══════ Final Result ══════`);
+        console.log(event.outcome.text);
+        console.log(`═════════════════════════`);
         console.log(`\n  [run:finished] ${event.outcome.finishReason} (${event.outcome.totalSteps} steps)`);
         break;
     }
