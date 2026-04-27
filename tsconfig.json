@@ -1,4 +1,8 @@
 {
   "files": [],
-  "references": [{ "path": "./packages/provider" }, { "path": "./packages/agent" }]
+  "references": [
+    { "path": "./packages/provider" },
+    { "path": "./packages/agent" },
+    { "path": "./packages/agent-v2" }
+  ]
 }

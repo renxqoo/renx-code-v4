@@ -7,6 +7,7 @@ import { createDefaultSandboxRegistry } from "../sandbox/default-registry";
 import type { RuntimeOutcome } from "../model/runtime";
 import zod from "zod";
 import { createAuditHook, createPermissionHook } from "../agent/hooks";
+import type { ContextBuilderInput } from "./context-builder";
 
 vi.mock("../model/runtime", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../model/runtime")>();
@@ -262,4 +263,113 @@ describe("AgentRuntime", () => {
       ]),
     );
   });
+
+  it("passes pending approval into resumed execution unless explicitly cleared", async () => {
+    runtime.mockResolvedValue(okOutcome());
+
+    const store = new InMemorySessionStore();
+    const seenPendingApprovals: Array<ContextBuilderInput["run"]["pendingApproval"]> = [];
+    const contextBuilder = {
+      async build(input: ContextBuilderInput) {
+        seenPendingApprovals.push(input.run.pendingApproval);
+        return {
+          ...input.run.initial,
+          messages: input.run.messages,
+        };
+      },
+    };
+
+    const agentRuntime = new AgentRuntime({
+      maxSteps: 3,
+      registry: new ToolRegistry(),
+      sandboxRegistry: createDefaultSandboxRegistry(),
+      sessionStore: store,
+      contextBuilder,
+    });
+
+    const firstRun = await agentRuntime.createRun(initialRequest("first"));
+    const secondRun = await agentRuntime.createRun(initialRequest("second"));
+    const pendingApproval = {
+      invocations: [{ callId: "call-1", name: "delete_file", args: {} }],
+      reason: "approval required",
+      requestedAt: "2026-01-01T00:00:00.000Z",
+    };
+
+    await store.saveRun({
+      ...(await agentRuntime.getRun(firstRun.runId))!,
+      status: "waiting_permission",
+      pendingApproval,
+    });
+    await store.saveRun({
+      ...(await agentRuntime.getRun(secondRun.runId))!,
+      status: "waiting_permission",
+      pendingApproval,
+    });
+
+    await agentRuntime.resumeRun(firstRun.runId);
+    await agentRuntime.resumeRun(secondRun.runId, { clearPendingApproval: true });
+
+    expect(seenPendingApprovals).toEqual([pendingApproval, undefined]);
+  });
+
+  it("keeps startRun backward compatible for waiting runs", async () => {
+    runtime.mockResolvedValue(okOutcome());
+
+    const store = new InMemorySessionStore();
+    const seenPendingApprovals: Array<ContextBuilderInput["run"]["pendingApproval"]> = [];
+    const contextBuilder = {
+      async build(input: ContextBuilderInput) {
+        seenPendingApprovals.push(input.run.pendingApproval);
+        return {
+          ...input.run.initial,
+          messages: input.run.messages,
+        };
+      },
+    };
+
+    const agentRuntime = new AgentRuntime({
+      maxSteps: 3,
+      registry: new ToolRegistry(),
+      sandboxRegistry: createDefaultSandboxRegistry(),
+      sessionStore: store,
+      contextBuilder,
+    });
+
+    const waitingInputRun = await agentRuntime.createRun(initialRequest("need more input"));
+    const waitingPermissionRun = await agentRuntime.createRun(initialRequest("need approval"));
+    const pendingApproval = {
+      invocations: [{ callId: "call-1", name: "delete_file", args: {} }],
+      reason: "approval required",
+      requestedAt: "2026-01-01T00:00:00.000Z",
+    };
+
+    await store.saveRun({
+      ...(await agentRuntime.getRun(waitingInputRun.runId))!,
+      status: "waiting_input",
+      pendingInput: {
+        reason: "Need a file path.",
+        requestedAt: "2026-01-01T00:00:00.000Z",
+      },
+    });
+    await store.saveRun({
+      ...(await agentRuntime.getRun(waitingPermissionRun.runId))!,
+      status: "waiting_permission",
+      pendingApproval,
+    });
+
+    const resumedFromInput = await agentRuntime.startRun(waitingInputRun.runId);
+    const resumedFromPermission = await agentRuntime.startRun(waitingPermissionRun.runId);
+
+    expect(resumedFromInput.status).toBe("finished");
+    expect(resumedFromPermission.status).toBe("finished");
+    expect(seenPendingApprovals).toEqual([undefined, undefined]);
+  });
 });
+
+function initialRequest(text: string) {
+  return {
+    model: "openai/gpt-4o-mini" as const,
+    systemPrompt: "Be concise.",
+    messages: [{ role: "user" as const, content: [{ type: "text" as const, text }] }],
+  };
+}

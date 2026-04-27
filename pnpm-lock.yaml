@@ -50,11 +50,26 @@ importers:
         specifier: ^8.20.0
         version: 8.20.0
 
+  packages/agent-v2:
+    dependencies:
+      '@renx/provider':
+        specifier: workspace:*
+        version: link:../provider
+      zod:
+        specifier: ^3.24.2
+        version: 3.25.76
+      zod-to-json-schema:
+        specifier: ^3.24.5
+        version: 3.25.2(zod@3.25.76)
+
   packages/examples:
     dependencies:
       '@renx/agent':
         specifier: workspace:*
         version: link:../agent
+      '@renx/agent-v2':
+        specifier: workspace:*
+        version: link:../agent-v2
       '@renx/provider':
         specifier: workspace:*
         version: link:../provider

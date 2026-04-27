@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { LLMClient } from "@renx/provider";
 import type { AgentHook } from "../agent/hooks";
 import type { LlmRetryConfig, QueryModelHooks, QueryModelOutcome } from "../agent/types";
@@ -9,7 +8,7 @@ import type { SandboxRegistry } from "../sandbox/sandbox-registry";
 import type { ToolRegistry } from "../tools/registry";
 import type { ContextBuilder } from "./context-builder";
 import { DefaultContextBuilder } from "./context-builder";
-import { Harness, type HarnessOutcome } from "./harness";
+import { Harness } from "./harness";
 import type {
   AgentEventQuery,
   AgentRunLease,
@@ -20,9 +19,10 @@ import type {
   AgentSessionStore,
 } from "./session-store";
 import { InMemorySessionStore } from "./session-store";
+import { RunStateMachine } from "./run-state-machine";
 import type { SummaryManager } from "./summary-manager";
 import { DefaultSummaryManager } from "./summary-manager";
-import type { AgentTelemetrySink } from "./telemetry";
+import type { AgentTelemetryEvent, AgentTelemetrySink } from "./telemetry";
 import { noopTelemetry } from "./telemetry";
 import type { TerminationPolicy } from "./termination-policy";
 import { DefaultTerminationPolicy } from "./termination-policy";
@@ -58,6 +58,7 @@ export class AgentRuntime {
   private readonly contextBuilder: ContextBuilder;
   private readonly summaryManager: SummaryManager;
   private readonly telemetry: AgentTelemetrySink;
+  private readonly stateMachine = new RunStateMachine({ now: nowIso });
 
   constructor(private readonly config: AgentRuntimeConfig) {
     this.logger = config.logger ?? noopLogger;
@@ -69,37 +70,7 @@ export class AgentRuntime {
   }
 
   async createRun(initial: QueryModelType): Promise<AgentRunRecord> {
-    const timestamp = nowIso();
-    const run: AgentRunRecord = {
-      runId: randomUUID(),
-      status: "ready",
-      maxSteps: this.config.maxSteps,
-      llmRounds: 0,
-      initial,
-      messages: [...initial.messages],
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    };
-
-    await this.sessionStore.createRun(run);
-    await this.sessionStore.appendEvents(run.runId, [
-      {
-        type: "run_created",
-        runId: run.runId,
-        at: timestamp,
-        model: initial.model,
-        maxSteps: this.config.maxSteps,
-      },
-    ]);
-    await this.captureTelemetry({
-      name: "run_created",
-      at: timestamp,
-      runId: run.runId,
-      status: run.status,
-      metadata: { model: initial.model, maxSteps: this.config.maxSteps },
-    });
-
-    return run;
+    return this.persistTransition(this.stateMachine.create(initial, this.config.maxSteps), "create");
   }
 
   async run(initial: QueryModelType, hooks?: QueryModelHooks): Promise<QueryModelOutcome> {
@@ -109,76 +80,23 @@ export class AgentRuntime {
 
   async startRun(runId: string, hooks?: QueryModelHooks): Promise<QueryModelOutcome> {
     const run = await this.requireRun(runId);
-    if (run.status === "cancelled") {
-      throw new Error(`Run ${runId} has been cancelled and cannot be started.`);
-    }
     if (run.status === "finished" || run.status === "failed") {
       return this.outcomeFromRun(run, "stop");
     }
-
-    const timestamp = nowIso();
-    const nextRun: AgentRunRecord = {
-      ...run,
-      status: "running",
-      startedAt: run.startedAt ?? timestamp,
-      updatedAt: timestamp,
-      pendingApproval: undefined,
-      pendingInput: undefined,
-    };
-
-    await this.sessionStore.saveRun(nextRun);
-    await this.sessionStore.appendEvents(runId, [
-      {
-        type: "run_started",
-        runId,
-        at: timestamp,
-        resumed: run.status !== "ready",
-        status: nextRun.status,
-      },
-    ]);
-    await this.captureTelemetry({
-      name: "run_started",
-      at: timestamp,
-      runId,
-      status: nextRun.status,
-      metadata: { resumed: run.status !== "ready" },
-    });
-
+    if (run.status === "waiting_input") {
+      return this.resumeRun(runId, {}, hooks);
+    }
+    if (run.status === "waiting_permission") {
+      return this.resumeRun(runId, { clearPendingApproval: true }, hooks);
+    }
+    const nextRun = await this.persistTransition(this.stateMachine.start(run));
     return this.executeRun(nextRun, hooks);
   }
 
   async resumeRun(runId: string, input: ResumeRunInput = {}, hooks?: QueryModelHooks): Promise<QueryModelOutcome> {
     const run = await this.requireRun(runId);
-    if (run.status !== "waiting_input" && run.status !== "waiting_permission" && run.status !== "running") {
-      throw new Error(`Run ${runId} is not resumable from status ${run.status}.`);
-    }
-
-    const events: AgentRuntimeEvent[] = [];
-    const nextMessages = [...run.messages];
-    if (input.userMessages?.length) {
-      nextMessages.push(...input.userMessages);
-      events.push({
-        type: "user_input_appended",
-        runId,
-        at: nowIso(),
-        messageCount: input.userMessages.length,
-      });
-    }
-
-    const nextRun: AgentRunRecord = {
-      ...run,
-      status: "running",
-      messages: nextMessages,
-      pendingInput: undefined,
-      pendingApproval: input.clearPendingApproval ? undefined : run.pendingApproval,
-      updatedAt: nowIso(),
-    };
-
-    await this.sessionStore.saveRun(nextRun);
-    if (events.length > 0) {
-      await this.sessionStore.appendEvents(runId, events);
-    }
-    return this.startRun(runId, hooks);
+    const nextRun = await this.persistTransition(this.stateMachine.resume(run, input));
+    return this.executeRun(nextRun, hooks);
   }
 
   async cancelRun(runId: string): Promise<AgentRunRecord> {
@@ -186,34 +104,7 @@ export class AgentRuntime {
     if (run.status === "finished" || run.status === "failed" || run.status === "cancelled") {
       return run;
     }
-
-    const timestamp = nowIso();
-    const nextRun: AgentRunRecord = {
-      ...run,
-      status: "cancelled",
-      stopReason: "cancelled",
-      finishedAt: timestamp,
-      updatedAt: timestamp,
-    };
-    await this.sessionStore.saveRun(nextRun);
-    await this.sessionStore.appendEvents(runId, [
-      {
-        type: "run_finished",
-        runId,
-        at: timestamp,
-        status: "cancelled",
-        finishReason: "stop",
-        stopReason: "cancelled",
-      },
-    ]);
-    await this.captureTelemetry({
-      name: "run_cancelled",
-      at: timestamp,
-      runId,
-      status: nextRun.status,
-      finishReason: "stop",
-    });
-    return nextRun;
+    return this.persistTransition(this.stateMachine.cancel(run));
   }
 
   async getRun(runId: string): Promise<AgentRunRecord | null> {
@@ -305,48 +196,10 @@ export class AgentRuntime {
 
     try {
       const outcome = await harness.run(liveRun);
-      const finalRun = this.applyOutcomeToRun(liveRun, outcome);
-      await this.sessionStore.saveRun(finalRun);
-      await this.sessionStore.appendEvents(finalRun.runId, this.finalEvents(finalRun, outcome));
-      await this.captureTelemetry({
-        name: outcome.status === "waiting_input" || outcome.status === "waiting_permission" ? "run_waiting" : "run_finished",
-        at: nowIso(),
-        runId: finalRun.runId,
-        status: finalRun.status,
-        finishReason: outcome.finishReason,
-        metadata: outcome.stopReason ? { stopReason: outcome.stopReason } : undefined,
-      });
+      await this.persistTransition(this.stateMachine.complete(liveRun, outcome));
       return outcome;
     } catch (error) {
-      const timestamp = nowIso();
-      const failedRun: AgentRunRecord = {
-        ...liveRun,
-        status: "failed",
-        lastError: error,
-        stopReason: "fatal_error",
-        finishedAt: timestamp,
-        updatedAt: timestamp,
-      };
-      await this.sessionStore.saveRun(failedRun);
-      await this.sessionStore.appendEvents(failedRun.runId, [
-        {
-          type: "run_finished",
-          runId: failedRun.runId,
-          at: timestamp,
-          status: "failed",
-          finishReason: "error",
-          stopReason: "fatal_error",
-          error,
-        },
-      ]);
-      await this.captureTelemetry({
-        name: "run_finished",
-        at: timestamp,
-        runId: failedRun.runId,
-        status: failedRun.status,
-        finishReason: "error",
-        metadata: { stopReason: "fatal_error" },
-      });
+      const failedRun = await this.persistTransition(this.stateMachine.fail(liveRun, error));
       return {
         runId: failedRun.runId,
         status: failedRun.status,
@@ -368,67 +221,6 @@ export class AgentRuntime {
         stopReason: failedRun.stopReason,
       };
     }
-  }
-
-  private applyOutcomeToRun(run: AgentRunRecord, outcome: HarnessOutcome): AgentRunRecord {
-    const timestamp = nowIso();
-    const terminal = outcome.status === "finished" || outcome.status === "failed";
-    return {
-      ...run,
-      status: outcome.status,
-      messages: outcome.messages,
-      llmRounds: outcome.llmRounds,
-      summary: outcome.summary,
-      stopReason: outcome.stopReason,
-      lastError: outcome.error,
-      pendingApproval: outcome.pendingApproval,
-      pendingInput: outcome.status === "waiting_input"
-        ? { reason: outcome.stopReason ?? "Additional user input required.", requestedAt: timestamp }
-        : undefined,
-      updatedAt: timestamp,
-      finishedAt: terminal ? timestamp : run.finishedAt,
-    };
-  }
-
-  private finalEvents(run: AgentRunRecord, outcome: HarnessOutcome): AgentRuntimeEvent[] {
-    const timestamp = nowIso();
-    if (outcome.status === "waiting_permission") {
-      return [
-        {
-          type: "run_waiting",
-          runId: run.runId,
-          at: timestamp,
-          status: "waiting_permission",
-          reason: outcome.stopReason,
-          pendingApproval: outcome.pendingApproval,
-        },
-      ];
-    }
-
-    if (outcome.status === "waiting_input") {
-      return [
-        {
-          type: "run_waiting",
-          runId: run.runId,
-          at: timestamp,
-          status: "waiting_input",
-          reason: outcome.stopReason,
-          pendingInput: { reason: outcome.stopReason ?? "Additional user input required.", requestedAt: timestamp },
-        },
-      ];
-    }
-
-    return [
-      {
-        type: "run_finished",
-        runId: run.runId,
-        at: timestamp,
-        status: outcome.status === "failed" ? "failed" : "finished",
-        finishReason: outcome.finishReason,
-        stopReason: outcome.stopReason,
-        error: outcome.error,
-      },
-    ];
   }
 
   private outcomeFromRun(run: AgentRunRecord, finishReason: QueryModelOutcome["finishReason"]): QueryModelOutcome {
@@ -463,7 +255,29 @@ export class AgentRuntime {
     return run;
   }
 
-  private async captureTelemetry(event: import("./telemetry").AgentTelemetryEvent): Promise<void> {
+  private async persistTransition(
+    transition: {
+      run: AgentRunRecord;
+      events: AgentRuntimeEvent[];
+      telemetry: AgentTelemetryEvent[];
+    },
+    mode: "create" | "save" = "save",
+  ): Promise<AgentRunRecord> {
+    if (mode === "create") {
+      await this.sessionStore.createRun(transition.run);
+    } else {
+      await this.sessionStore.saveRun(transition.run);
+    }
+    if (transition.events.length > 0) {
+      await this.sessionStore.appendEvents(transition.run.runId, transition.events);
+    }
+    for (const event of transition.telemetry) {
+      await this.captureTelemetry(event);
+    }
+    return transition.run;
+  }
+
+  private async captureTelemetry(event: AgentTelemetryEvent): Promise<void> {
     try {
       await this.telemetry.capture(event);
     } catch (error) {

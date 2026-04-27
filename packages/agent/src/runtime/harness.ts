@@ -1,4 +1,3 @@
-import type { CanonicalTool } from "@renx/provider";
 import type { LLMClient } from "@renx/provider";
 import {
   createDefaultRunProfile,
@@ -6,34 +5,22 @@ import {
   type AgentFeatureFlagValue,
   type AgentHook,
   type AgentHookEvent,
-  type AgentToolAuthorizationResult,
-  type AgentToolInvocation,
   type ResolvedRunProfile,
 } from "../agent/hooks";
 import {
-  computeRetryDelayMs,
   DEFAULT_LLM_MAX_RETRIES,
-  sleepRetryDelay,
 } from "../agent/llm-retry";
 import type { AgentLogger } from "../agent/logger";
 import { noopLogger } from "../agent/logger";
 import type { LlmRetryConfig, QueryModelHooks, QueryModelOutcome } from "../agent/types";
-import {
-  appendAssistantTextOnly,
-  appendAssistantToolRound,
-  appendToolResultMessages,
-} from "../conversation/tool-messages";
+import { appendAssistantTextOnly } from "../conversation/tool-messages";
 import type { Message } from "../domain/message";
-import { runtime, type RuntimeOutcome } from "../model/runtime";
-import { drainTextStream } from "../model/stream-drain";
+import type { RuntimeOutcome } from "../model/runtime";
 import type { SandboxRegistry } from "../sandbox/sandbox-registry";
-import { toolsToCanonical } from "../tools/canonical";
 import type { ToolRegistry } from "../tools/registry";
-import type { AgentToolExecutionResult } from "../tools/type";
 import type { ContextBuilder } from "./context-builder";
-import { DecisionRouter } from "./decision-router";
+import { ReActLoopEngine } from "./react-loop-engine";
 import type {
-  AgentPendingApproval,
   AgentRunRecord,
   AgentRunSummary,
   AgentRuntimeEvent,
@@ -42,6 +29,7 @@ import type { SummaryManager } from "./summary-manager";
 import type { AgentTelemetrySink } from "./telemetry";
 import { noopTelemetry } from "./telemetry";
 import type { TerminationPolicy } from "./termination-policy";
+import { ToolCallProcessor } from "./tool-call-processor";
 import { ToolRuntime } from "./tool-runtime";
 
 type HarnessDependencies = {
@@ -97,16 +85,14 @@ function initLoopState(run: AgentRunRecord, llmRetry?: LlmRetryConfig): LoopStat
 
 export class Harness {
   private readonly maxSteps: number;
-  private readonly registry: ToolRegistry;
   private readonly hooks?: QueryModelHooks;
   private readonly enterpriseHooks: AgentHook[];
   private readonly llmRetry?: LlmRetryConfig;
-  private readonly llmClient?: LLMClient;
   private readonly logger: AgentLogger;
   private readonly terminationPolicy: TerminationPolicy;
-  private readonly decisionRouter = new DecisionRouter();
   private readonly toolRuntime: ToolRuntime;
-  private readonly contextBuilder: ContextBuilder;
+  private readonly toolCallProcessor: ToolCallProcessor;
+  private readonly reactLoopEngine: ReActLoopEngine;
   private readonly summaryManager: SummaryManager;
   private readonly telemetry: AgentTelemetrySink;
   private readonly recordEvents?: (events: AgentRuntimeEvent[]) => Promise<void>;
@@ -114,15 +100,30 @@ export class Harness {
 
   constructor(deps: HarnessDependencies) {
     this.maxSteps = deps.maxSteps;
-    this.registry = deps.registry;
     this.hooks = deps.hooks;
     this.enterpriseHooks = deps.enterpriseHooks ?? [];
     this.llmRetry = deps.llmRetry;
-    this.llmClient = deps.llmClient;
     this.logger = deps.logger ?? noopLogger;
     this.terminationPolicy = deps.terminationPolicy;
     this.toolRuntime = new ToolRuntime(deps.registry, deps.sandboxRegistry, this.logger);
-    this.contextBuilder = deps.contextBuilder;
+    this.reactLoopEngine = new ReActLoopEngine({
+      registry: deps.registry,
+      hooks: this.hooks,
+      llmRetry: this.llmRetry,
+      llmClient: deps.llmClient,
+      logger: this.logger,
+      contextBuilder: deps.contextBuilder,
+      emitEvent: (event) => this.emitEvent(event),
+      pushEvents: (events) => this.pushEvents(events),
+      captureTelemetry: (event) => this.captureTelemetry(event),
+    });
+    this.toolCallProcessor = new ToolCallProcessor({
+      toolRuntime: this.toolRuntime,
+      enterpriseHooks: this.enterpriseHooks,
+      emitEvent: (event) => this.emitEvent(event),
+      pushEvents: (events) => this.pushEvents(events),
+      captureTelemetry: (event) => this.captureTelemetry(event),
+    });
     this.summaryManager = deps.summaryManager;
     this.telemetry = deps.telemetry ?? noopTelemetry;
     this.recordEvents = deps.recordEvents;
@@ -177,136 +178,19 @@ export class Harness {
         },
       ]);
 
-      let outcome: RuntimeOutcome;
-      let finishReason: Awaited<RuntimeOutcome["finishReason"]>;
-      let assistantText: string;
-      let calls: Awaited<RuntimeOutcome["toolCalls"]>;
-      let usage: Awaited<RuntimeOutcome["usage"]>;
-
-      modelAttemptLoop: while (true) {
-        const modelStartedAt = Date.now();
-        const tools = mergeCanonicalTools(toolsToCanonical(this.registry.list()), run.initial.tools);
-        const streamConfig = await this.contextBuilder.build({
-          run: {
-            ...run,
-            messages: state.messages,
-            llmRounds: state.llmRounds,
-            summary: state.summary,
-          },
-          profile: state.profile,
-          tools,
-        });
-        await this.emitEvent({
-          type: "model_started",
-          runId: run.runId,
-          llmRound: state.llmRounds,
-          model: streamConfig.model,
-          toolCount: tools?.length ?? 0,
-          messageCount: state.messages.length,
-          ...this.hookContext(state.profile),
-        });
-
-        this.logger.debug("modelCall", {
-          runId: run.runId,
-          llmRound: state.llmRounds,
-          retryRemaining: state.retryRemaining,
-          attempt: state.retryDelayAttemptIndex,
-        });
-
-        outcome = await runtime(streamConfig, this.llmClient);
-        state.lastStream = outcome;
-
-        const onStreamChunk = this.hooks?.onStreamChunk;
-        await drainTextStream(
-          outcome.textStream,
-          onStreamChunk
-            ? (chunk) =>
-                onStreamChunk(chunk, {
-                  llmRound: state.llmRounds,
-                  suppressOutput: state.profile.suppressStreaming,
-                })
-            : undefined,
-        );
-
-        [finishReason, assistantText, calls, usage] = await Promise.all([
-          outcome.finishReason,
-          outcome.text,
-          outcome.toolCalls,
-          outcome.usage,
-        ]);
-
-        await this.pushEvents([
-          {
-            type: "model_completed",
-            runId: run.runId,
-            at: new Date().toISOString(),
-            stepIndex: state.llmRounds,
-            llmRound: state.llmRounds,
-            ok: outcome.ok,
-            finishReason,
-            assistantText,
-            toolCalls: calls,
-            usage,
-            error: outcome.ok ? undefined : outcome.error,
-          },
-        ]);
-        await this.emitEvent({
-          type: "model_completed",
-          runId: run.runId,
-          llmRound: state.llmRounds,
-          ok: outcome.ok,
-          finishReason,
-          assistantText,
-          toolCalls: calls,
-          usage,
-          error: outcome.ok ? undefined : outcome.error,
-          ...this.hookContext(state.profile),
-        });
-        await this.captureTelemetry({
-          name: "model_completed",
-          at: new Date().toISOString(),
-          runId: run.runId,
-          llmRound: state.llmRounds,
-          durationMs: Date.now() - modelStartedAt,
-          finishReason,
-          success: outcome.ok,
-          metadata: {
-            toolCallCount: calls.length,
-            usage,
-            model: streamConfig.model,
-          },
-        });
-
-        if (outcome.ok) break modelAttemptLoop;
-
-        this.logger.warn("modelCallFailed", {
-          runId: run.runId,
-          llmRound: state.llmRounds,
-          error: String(outcome.error),
-        });
-
-        const allowRetry =
-          state.retryRemaining > 0 &&
-          (this.llmRetry?.isRetryable == null
-            ? true
-            : this.llmRetry.isRetryable({ error: outcome.error, model: streamConfig.model }));
-        if (!allowRetry) {
-          break modelAttemptLoop;
-        }
-
-        state.retryRemaining -= 1;
-        const delayMs = computeRetryDelayMs(this.llmRetry, state.retryDelayAttemptIndex);
-        state.retryDelayAttemptIndex += 1;
-        await sleepRetryDelay(delayMs, this.hooks?.signal);
-      }
-
-      const decision = this.decisionRouter.route({
-        outcome,
-        finishReason,
-        assistantText,
-        toolCalls: calls,
-        usage,
+      const step = await this.reactLoopEngine.executeStep({
+        run,
+        llmRound: state.llmRounds,
+        messages: state.messages,
+        summary: state.summary,
+        profile: state.profile,
+        retryRemaining: state.retryRemaining,
+        retryDelayAttemptIndex: state.retryDelayAttemptIndex,
       });
+      state.lastStream = step.lastStream;
+      state.retryRemaining = step.retryRemaining;
+      state.retryDelayAttemptIndex = step.retryDelayAttemptIndex;
+      const decision = step.decision;
 
       const termination = this.terminationPolicy.evaluate({
         llmRounds: state.llmRounds,
@@ -322,7 +206,7 @@ export class Harness {
           summary: state.summary,
           finishReason: "error",
           llmRounds: state.llmRounds,
-          lastStream: outcome,
+          lastStream: step.lastStream,
           error: decision.error,
           stopReason: "model_error",
         };
@@ -341,112 +225,52 @@ export class Harness {
           summary: state.summary,
           finishReason: decision.finishReason,
           llmRounds: state.llmRounds,
-          lastStream: outcome,
+          lastStream: step.lastStream,
         };
         await this.emitTerminalEvent(finalOutcome, state.profile);
         return finalOutcome;
       }
 
-      state.messages = appendAssistantToolRound(state.messages, decision.assistantText, decision.toolCalls);
-      const invocations = this.toolRuntime.prepare(decision.toolCalls);
-      const hookInvocations: AgentToolInvocation[] = invocations.map((invocation) => ({
-        callId: invocation.callId,
-        name: invocation.tool.name,
-        args: invocation.args,
-      }));
-      await this.emitEvent({
-        type: "tool_authorization_requested",
-        runId: run.runId,
+      const toolProcessing = await this.toolCallProcessor.process({
+        run,
         llmRound: state.llmRounds,
-        invocations: hookInvocations,
-        ...this.hookContext(state.profile),
+        decision,
+        messages: state.messages,
+        profile: state.profile,
+        signal: this.hooks?.signal,
       });
 
-      const authorization = await this.authorizeTools(state, run, hookInvocations);
-      await this.emitEvent({
-        type: "tool_authorization_resolved",
-        runId: run.runId,
-        llmRound: state.llmRounds,
-        action: authorization.action,
-        deniedCallIds: authorization.action === "deny" ? authorization.callIds : undefined,
-        reason: "reason" in authorization ? authorization.reason : undefined,
-        ...this.hookContext(state.profile),
-      });
-
-      if (authorization.action === "abort") {
+      if (toolProcessing.type === "abort") {
         const failure: HarnessOutcome = {
           runId: run.runId,
           status: "failed",
-          messages: state.messages,
+          messages: toolProcessing.messages,
           summary: state.summary,
           finishReason: "stop",
           llmRounds: state.llmRounds,
           lastStream: state.lastStream,
-          error: new Error(authorization.reason),
-          stopReason: authorization.reason,
+          error: new Error(toolProcessing.reason),
+          stopReason: toolProcessing.reason,
         };
         await this.emitTerminalEvent(failure, state.profile);
         return failure;
       }
 
-      if (authorization.action === "pause") {
-        const pendingApproval: AgentPendingApproval = {
-          invocations: hookInvocations,
-          reason: authorization.reason,
-          requestedAt: new Date().toISOString(),
-        };
+      if (toolProcessing.type === "pause") {
         return {
           runId: run.runId,
           status: "waiting_permission",
-          messages: state.messages,
+          messages: toolProcessing.messages,
           summary: state.summary,
           finishReason: "stop",
           llmRounds: state.llmRounds,
           lastStream: state.lastStream,
-          stopReason: authorization.reason,
-          pendingApproval,
+          stopReason: toolProcessing.reason,
+          pendingApproval: toolProcessing.pendingApproval,
         };
       }
 
-      const toolStartedAt = Date.now();
-      const results = await this.executeAuthorizedTools(invocations, authorization, state.profile);
-      state.messages = appendToolResultMessages(state.messages, decision.toolCalls, results);
-      await this.emitEvent({
-        type: "tool_completed",
-        runId: run.runId,
-        llmRound: state.llmRounds,
-        results,
-        ...this.hookContext(state.profile),
-      });
-      await this.captureTelemetry({
-        name: "tool_completed",
-        at: new Date().toISOString(),
-        runId: run.runId,
-        llmRound: state.llmRounds,
-        durationMs: Date.now() - toolStartedAt,
-        toolCount: results.length,
-        success: results.every((result) => result.success),
-        metadata: {
-          tools: decision.toolCalls.map((toolCall) => toolCall.name),
-        },
-      });
-
-      await this.pushEvents([
-        {
-          type: "tool_execution_completed",
-          runId: run.runId,
-          at: new Date().toISOString(),
-          stepIndex: state.llmRounds,
-          llmRound: state.llmRounds,
-          toolCalls: decision.toolCalls,
-          results: results.map((result) => ({
-            success: result.success,
-            content: result.content,
-            metadata: result.metadata,
-          })),
-        },
-      ]);
-
+      state.messages = toolProcessing.messages;
       await this.refreshSummary(run, state);
       await this.persistProgress(run, state);
 
@@ -518,81 +342,6 @@ export class Harness {
     return profile;
   }
 
-  private async authorizeTools(
-    state: LoopState,
-    run: AgentRunRecord,
-    invocations: AgentToolInvocation[],
-  ): Promise<AgentToolAuthorizationResult> {
-    const denied = new Map<string, string>();
-
-    for (const hook of this.enterpriseHooks) {
-      const decision = await hook.authorizeTools?.({
-        runId: run.runId,
-        llmRound: state.llmRounds,
-        messages: state.messages,
-        invocations,
-        labels: state.profile.labels,
-        featureFlags: state.profile.featureFlags,
-        signal: this.hooks?.signal,
-      });
-      if (!decision || decision.action === "allow") continue;
-      if (decision.action === "abort" || decision.action === "pause") return decision;
-
-      const targetCallIds = decision.callIds?.length
-        ? decision.callIds
-        : invocations.map((invocation) => invocation.callId);
-      for (const callId of targetCallIds) {
-        denied.set(callId, decision.reason ?? "Tool execution denied.");
-      }
-    }
-
-    return denied.size > 0
-      ? { action: "deny", reason: "Some tool calls were denied.", callIds: [...denied.keys()] }
-      : { action: "allow" };
-  }
-
-  private async executeAuthorizedTools(
-    invocations: ReturnType<ToolRuntime["prepare"]>,
-    authorization: AgentToolAuthorizationResult,
-    profile: ResolvedRunProfile,
-  ): Promise<AgentToolExecutionResult[]> {
-    if (authorization.action !== "deny") {
-      return this.toolRuntime.execute(invocations, profile);
-    }
-
-    const deniedCallIds = new Set(authorization.callIds ?? invocations.map((invocation) => invocation.callId));
-    const allowed: typeof invocations = [];
-    const resultByCallId = new Map<string, AgentToolExecutionResult>();
-
-    for (const invocation of invocations) {
-      if (deniedCallIds.has(invocation.callId)) {
-        resultByCallId.set(
-          invocation.callId,
-          this.toolRuntime.deny(
-            invocation.callId,
-            invocation.tool.name,
-            authorization.reason ?? "Tool execution denied.",
-          ),
-        );
-      } else {
-        allowed.push(invocation);
-      }
-    }
-
-    const allowedResults = await this.toolRuntime.execute(allowed, profile);
-    allowed.forEach((invocation, index) => {
-      resultByCallId.set(invocation.callId, allowedResults[index]);
-    });
-
-    return invocations.map((invocation) => {
-      const result = resultByCallId.get(invocation.callId);
-      if (!result) {
-        throw new Error(`Missing tool result for call ${invocation.callId}`);
-      }
-      return result;
-    });
-  }
-
   private async pushEvents(events: AgentRuntimeEvent[]): Promise<void> {
     await this.recordEvents?.(events);
   }
@@ -647,18 +396,4 @@ export class Harness {
       });
     }
   }
-}
-
-function mergeCanonicalTools(
-  registryTools: CanonicalTool[] | undefined,
-  inputTools: CanonicalTool[] | undefined,
-): CanonicalTool[] | undefined {
-  if (!registryTools?.length && !inputTools?.length) return undefined;
-  if (!registryTools?.length) return inputTools;
-  if (!inputTools?.length) return registryTools;
-
-  const merged = new Map<string, CanonicalTool>();
-  for (const tool of registryTools) merged.set(tool.name, tool);
-  for (const tool of inputTools) merged.set(tool.name, tool);
-  return [...merged.values()];
 }

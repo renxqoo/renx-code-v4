@@ -22,10 +22,18 @@
     "demo:agent-worker": "tsx src/agent/05-runtime-background-worker.ts",
     "demo:agent-server": "tsx src/agent/06-queue-worker-primitives.ts",
     "demo:agent-worker-daemon": "tsx src/agent/07-worker-daemon.ts",
-    "demo:agent-enterprise": "tsx src/agent/08-enterprise-managed-demo.ts"
+    "demo:agent-enterprise": "tsx src/agent/08-enterprise-managed-demo.ts",
+    "demo:agent-v2-basic": "tsx src/agent-v2/01-basic.ts",
+    "demo:agent-v2-streaming": "tsx src/agent-v2/02-streaming.ts",
+    "demo:agent-v2-plugins": "tsx src/agent-v2/03-with-plugins.ts",
+    "demo:agent-v2-approval": "tsx src/agent-v2/04-approval.ts",
+    "demo:agent-v2-multi-agent": "tsx src/agent-v2/05-multi-agent.ts",
+    "demo:agent-v2-handoff": "tsx src/agent-v2/06-handoff.ts",
+    "demo:agent-v2-worker": "tsx src/agent-v2/07-worker.ts"
   },
   "dependencies": {
     "@renx/agent": "workspace:*",
+    "@renx/agent-v2": "workspace:*",
     "@renx/provider": "workspace:*",
     "zod": "^3.24.2"
   },
