@@ -1,0 +1,6 @@
+{
+  "templateId": "",
+  "apiUrl": "https://api.e2b.dev",
+  "apiKey": "",
+  "timeoutMs": 60000
+}

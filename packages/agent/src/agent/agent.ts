@@ -41,7 +41,6 @@ export type {
   QueryStreamChunkMeta,
 } from "./types";
 export type { CreateDefaultLLMClientOptions } from "@renx/provider";
-export type { SandboxRegistry } from "../sandbox/sandbox-registry";
 export { createDefaultSandboxRegistry, buildSandboxExecutionContext } from "../sandbox/index";
 export { ToolRegistry } from "../tools/registry";
 export type { TerminationEvaluation, TerminationPolicy } from "../runtime/termination-policy";

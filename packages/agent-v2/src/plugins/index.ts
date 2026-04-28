@@ -1,6 +1,7 @@
 export { withLogging } from "./logging.js";
 export { withRetry } from "./retry.js";
 export { withApproval } from "./approval.js";
+export { withSandbox, wrapTool, type SandboxExecutor, type SandboxResult } from "./with-sandbox.js";
 export { withTelemetry } from "./telemetry.js";
 export { withPromptGuard } from "./prompt-guard.js";
 export { withTimeout } from "./timeout.js";

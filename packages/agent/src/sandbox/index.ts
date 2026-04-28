@@ -14,6 +14,10 @@ export {
   type HttpSandboxExecutePayload,
   type HttpSandboxToolDescriptor,
 } from "./backends/http";
+export {
+  CubeSandboxBackend,
+  type CubeSandboxBackendOptions,
+} from "./backends/cube";
 export { InProcessSandboxBackend } from "./backends/in-process";
 export { createDefaultSandboxRegistry } from "./default-registry";
 export { buildSandboxExecutionContext } from "./context";

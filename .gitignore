@@ -9,3 +9,7 @@ coverage
 
 # Local demo runtime state (session files, etc.)
 .demo-state/
+
+# CubeSandbox local config (copy from .example)
+cube-sandbox.json
+data/
