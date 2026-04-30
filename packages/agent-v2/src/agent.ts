@@ -4,6 +4,7 @@ import {
   assistantMessage,
   systemMessage,
   toolMessage,
+  userMessage,
   type ToolCall,
 } from "./message.js";
 import { type Tool } from "./tool.js";
@@ -19,6 +20,7 @@ import type { AgentInput, AgentGenerator, AgentResult } from "./types.js";
 import type { AgentEvent, LLMToolCallEvent } from "./events.js";
 import { HandoffSignal } from "./handoff-signal.js";
 import { toolToCanonical } from "./utils/converter.js";
+import { estimateInputTokens, estimateOutputTokens } from "./utils/estimate-tokens.js";
 import {
   accumulateToolCall,
   finalizeToolCall,
@@ -168,6 +170,7 @@ export async function* agent(input: AgentInput): AgentGenerator {
     let doneChunk: LLMFinishChunk | null = null;
     let errorChunk: LLMErrorChunk | null = null;
     let streamError: unknown = null;
+    let usageIsZero = false;
 
     try {
       const stream = llmClient.stream(request);
@@ -203,10 +206,19 @@ export async function* agent(input: AgentInput): AgentGenerator {
             break;
           case "finish":
             doneChunk = chunk;
-            state.tokenUsage = {
-              input: state.tokenUsage.input + chunk.usage.input,
-              output: state.tokenUsage.output + chunk.usage.output,
-            };
+            usageIsZero = chunk.usage.input === 0 && chunk.usage.output === 0;
+            if (!usageIsZero) {
+              state.tokenUsage = {
+                input: state.tokenUsage.input + chunk.usage.input,
+                output: state.tokenUsage.output + chunk.usage.output,
+                total:
+                  state.tokenUsage.input +
+                  state.tokenUsage.output +
+                  chunk.usage.input +
+                  chunk.usage.output,
+                estimated: state.tokenUsage.estimated,
+              };
+            }
             break;
           case "error":
             errorChunk = chunk;
@@ -299,6 +311,24 @@ export async function* agent(input: AgentInput): AgentGenerator {
       }
     }
 
+    // Estimate token usage if LLM returned all zeros (e.g., local models)
+    if (usageIsZero) {
+      const estInput = estimateInputTokens(
+        state.systemPrompt,
+        state.messages,
+        canonicalTools,
+      );
+      const estOutput = estimateOutputTokens(text, finalToolCalls);
+      const prevTotal =
+        (state.tokenUsage.input ?? 0) + (state.tokenUsage.output ?? 0);
+      state.tokenUsage = {
+        input: state.tokenUsage.input + estInput,
+        output: state.tokenUsage.output + estOutput,
+        total: prevTotal + estInput + estOutput,
+        estimated: true,
+      };
+    }
+
     // Yield llm:done
     yield {
       type: "llm:done",
@@ -323,7 +353,7 @@ export async function* agent(input: AgentInput): AgentGenerator {
         // Inject warning to give the LLM one more chance
         state.messages = [
           ...state.messages,
-          systemMessage(
+          userMessage(
             "You have reached the maximum response length. Please continue your response from where you left off.",
           ),
         ];

@@ -128,6 +128,7 @@ async function* adaptChunks(
           usage: {
             input: chunk.usage?.inputTokens ?? 0,
             output: chunk.usage?.outputTokens ?? 0,
+            total: chunk.usage?.totalTokens,
           },
         } satisfies LLMChunk;
         break;

@@ -37,6 +37,8 @@
     "@renx/agent": "workspace:*",
     "@renx/agent-v2": "workspace:*",
     "@renx/provider": "workspace:*",
+    "@types/pg": "^8.20.0",
+    "pg": "^8.20.0",
     "zod": "^3.24.2"
   },
   "devDependencies": {

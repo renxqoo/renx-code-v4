@@ -1,6 +1,8 @@
 import type { LLMError } from "./errors";
 import type {
   AdapterCapabilities,
+  CanonicalEmbeddingRequest,
+  CanonicalEmbeddingResult,
   CanonicalImageRequest,
   CanonicalImageResult,
   CanonicalRequest,
@@ -76,4 +78,10 @@ export interface LLMAdapter {
     query: CanonicalVideoDownloadQuery,
     ctx: AdapterInvokeContext,
   ): Promise<CanonicalVideoContentResult>;
+
+  /** Generate vector embeddings (e.g. OpenAI text-embedding-3). */
+  generateEmbedding?(
+    request: CanonicalEmbeddingRequest,
+    ctx: AdapterInvokeContext,
+  ): Promise<CanonicalEmbeddingResult>;
 }

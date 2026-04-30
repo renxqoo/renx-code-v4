@@ -5,6 +5,7 @@ import type { LLMRegistry } from "./registry";
 import { defaultRetryPolicy, executeWithRetry, mergeRetryPolicy, type RetryPolicy } from "./retry";
 import type { AdapterInvokeContext } from "./adapter";
 import type {
+  CanonicalEmbeddingResult,
   CanonicalFinishReason,
   CanonicalImageResult,
   CanonicalMessage,
@@ -91,6 +92,10 @@ export type DownloadVideoOptions = ClientCallOptionsBase & {
   fileId?: string;
 };
 
+export type GenerateEmbeddingOptions = ClientCallOptionsBase & {
+  input: string | string[];
+};
+
 export type StreamTextResult = {
   textStream: AsyncIterable<CanonicalStreamChunk>;
   text: Promise<string>;
@@ -106,6 +111,7 @@ export type LLMRequestMode =
   | "image"
   | "speech"
   | "transcribe"
+  | "embedding"
   | "video"
   | "video_job"
   | "video_download";
@@ -153,6 +159,7 @@ export type LLMClient = {
   generateVideo(options: GenerateVideoOptions): Promise<CanonicalVideoResult>;
   getVideoJob(options: VideoJobCallOptions): Promise<CanonicalVideoJob>;
   downloadVideo(options: DownloadVideoOptions): Promise<CanonicalVideoContentResult>;
+  generateEmbedding(options: GenerateEmbeddingOptions): Promise<CanonicalEmbeddingResult>;
 };
 
 function nowMs(): number {
@@ -725,6 +732,26 @@ export function createLLMClient(config: LLMClientConfig): LLMClient {
     });
   }
 
+  function generateEmbedding(opts: GenerateEmbeddingOptions): Promise<CanonicalEmbeddingResult> {
+    return invokeAdapter("embedding", opts, (adapter, handle, ctx) => {
+      const fn = adapter.generateEmbedding;
+      if (!fn) {
+        throw notImplemented(handle.vendorId, "Embedding generation", handle.modelId);
+      }
+      return fn(
+        {
+          modelId: handle.modelId,
+          input: opts.input,
+          providerOptions: {
+            ...handle.providerOptions,
+            ...opts.providerOptions,
+          },
+        },
+        ctx,
+      );
+    });
+  }
+
   return {
     generateText,
     streamText,
@@ -734,5 +761,6 @@ export function createLLMClient(config: LLMClientConfig): LLMClient {
     generateVideo,
     getVideoJob,
     downloadVideo,
+    generateEmbedding,
   };
 }

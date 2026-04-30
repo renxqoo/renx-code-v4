@@ -47,6 +47,7 @@ export function withMaxTokens(opts: {
                     tokenUsage: {
                       input: cumulativeTokens,
                       output: 0,
+                      total: cumulativeTokens,
                     },
                     finishReason: "error",
                     totalSteps: event.step,
@@ -81,6 +82,7 @@ export function withMaxTokens(opts: {
                     tokenUsage: {
                       input: cumulativeTokens,
                       output: 0,
+                      total: cumulativeTokens,
                     },
                     finishReason: "error",
                     totalSteps: event.step,

@@ -8,4 +8,7 @@ export { withTimeout } from "./timeout.js";
 export { withStepTimeout } from "./step-timeout.js";
 export { withMaxTokens } from "./max-tokens.js";
 export { withCache, type CacheStore } from "./cache.js";
+export { withConversationHistory, getSessionId, type ConversationHistoryOptions } from "./conversation-history.js";
+export { withContextCompression, getContextMessages, clearContextWindow, type WithContextCompressionOptions } from "./context-compression.js";
+export { withMemory, type WithMemoryOptions, type EmbeddingClient } from "./with-memory.js";
 export type { Logger } from "../utils/logger.js";

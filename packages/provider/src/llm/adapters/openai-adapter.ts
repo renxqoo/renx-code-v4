@@ -9,6 +9,8 @@ import { assertNoReservedProviderOptions } from "../internal/provider-options";
 import { num } from "../internal/util";
 import type {
   AdapterEndpoints,
+  CanonicalEmbeddingRequest,
+  CanonicalEmbeddingResult,
   CanonicalFinishReason,
   CanonicalRequest,
   CanonicalStreamChunk,
@@ -23,6 +25,7 @@ export const DEFAULT_BASE = "https://api.openai.com";
 
 export const OPENAI_DEFAULT_PATHS: AdapterEndpoints = {
   chatCompletions: "v1/chat/completions",
+  embeddings: "v1/embeddings",
   imageGenerations: "v1/images/generations",
   audioSpeech: "v1/audio/speech",
   audioTranscriptions: "v1/audio/transcriptions",
@@ -81,6 +84,7 @@ function buildBody(req: CanonicalRequest, stream: boolean): Record<string, unkno
     "model",
     "messages",
     "stream",
+    "stream_options",
     "temperature",
     "max_tokens",
     "top_p",
@@ -145,6 +149,8 @@ function buildBody(req: CanonicalRequest, stream: boolean): Record<string, unkno
     }));
   }
   if (req.toolChoice !== undefined) body.tool_choice = req.toolChoice;
+  // Request usage in streaming responses (OpenAI requires this flag)
+  if (stream) body.stream_options = { include_usage: true };
   return body;
 }
 
@@ -283,6 +289,43 @@ export function createOpenAIAdapter(): LLMAdapter {
         modelId: ctx.modelId,
         cause: error,
       });
+    },
+    generateEmbedding: async (
+      request: CanonicalEmbeddingRequest,
+      ctx: AdapterInvokeContext,
+    ): Promise<CanonicalEmbeddingResult> => {
+      const p = resolvePaths(ctx);
+      const path = p.embeddings ?? OPENAI_DEFAULT_PATHS.embeddings!;
+      const base = ctx.baseUrl ?? DEFAULT_BASE;
+      const patchedCtx: AdapterInvokeContext = { ...ctx, baseUrl: base };
+
+      return withAdapterFetch(
+        patchedCtx,
+        path,
+        {
+          authHeaders: bearerAuthHeaders(ctx.apiKey),
+          json: {
+            model: request.modelId,
+            input: request.input,
+            ...(request.providerOptions ?? {}),
+          },
+          modelId: request.modelId,
+        },
+        async (res) => {
+          if (!res.ok) throw await mapHttpError(res, request.modelId, VENDOR);
+          const json = (await res.json()) as Record<string, unknown>;
+          const data = json.data as Array<Record<string, unknown>> | undefined;
+          const embeddings = (data ?? []).map(
+            (item) => (item as { embedding: number[] }).embedding,
+          );
+          return {
+            embeddings,
+            modelId: request.modelId,
+            usage: mapOpenAIUsage(json.usage as Record<string, unknown> | undefined),
+            raw: json,
+          };
+        },
+      );
     },
     ...createOpenAIMultimodalMethods(DEFAULT_BASE),
   };

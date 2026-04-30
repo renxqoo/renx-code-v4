@@ -1,6 +1,8 @@
 export type {
   AdapterCapabilities,
   AdapterEndpoints,
+  CanonicalEmbeddingRequest,
+  CanonicalEmbeddingResult,
   CanonicalFinishReason,
   CanonicalGenerateParams,
   CanonicalImageItem,
@@ -42,6 +44,7 @@ export {
   createLLMClient,
   type ClientCallOptionsBase,
   type DownloadVideoOptions,
+  type GenerateEmbeddingOptions,
   type GenerateImageOptions,
   type GenerateTextOptions,
   type GenerateVideoOptions,
@@ -92,4 +95,5 @@ export {
   generateVideo,
   getVideoJob,
   downloadVideo,
+  generateEmbedding,
 } from "./functional";

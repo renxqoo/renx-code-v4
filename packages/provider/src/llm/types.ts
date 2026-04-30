@@ -241,11 +241,27 @@ export type CanonicalVideoContentResult = {
   contentType?: string;
 };
 
+// --- Embedding ---
+
+export type CanonicalEmbeddingRequest = {
+  modelId: string;
+  input: string | string[];
+  providerOptions?: Record<string, unknown>;
+};
+
+export type CanonicalEmbeddingResult = {
+  embeddings: number[][];
+  modelId: string;
+  usage?: CanonicalUsage;
+  raw?: unknown;
+};
+
 // --- Adapter endpoint paths ---
 
 export type AdapterEndpoints = {
   chatCompletions?: string;
   messages?: string;
+  embeddings?: string;
   imageGenerations?: string;
   imageGeneration?: string;
   audioSpeech?: string;

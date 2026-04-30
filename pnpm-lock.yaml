@@ -58,12 +58,19 @@ importers:
       '@renx/provider':
         specifier: workspace:*
         version: link:../provider
+      pg:
+        specifier: ^8.20.0
+        version: 8.20.0
       zod:
         specifier: ^3.24.2
         version: 3.25.76
       zod-to-json-schema:
         specifier: ^3.24.5
         version: 3.25.2(zod@3.25.76)
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.20.0
+        version: 8.20.0
 
   packages/examples:
     dependencies:
@@ -76,6 +83,12 @@ importers:
       '@renx/provider':
         specifier: workspace:*
         version: link:../provider
+      '@types/pg':
+        specifier: ^8.20.0
+        version: 8.20.0
+      pg:
+        specifier: ^8.20.0
+        version: 8.20.0
       zod:
         specifier: ^3.24.2
         version: 3.25.76

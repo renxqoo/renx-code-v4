@@ -23,8 +23,10 @@ import type {
   TranscribeOptions,
   VideoJobCallOptions,
   DownloadVideoOptions,
+  GenerateEmbeddingOptions,
 } from "./client";
 import type {
+  CanonicalEmbeddingResult,
   CanonicalImageResult,
   CanonicalSpeechResult,
   CanonicalTextResult,
@@ -108,4 +110,11 @@ export async function downloadVideo(
   clientOptions?: CreateDefaultLLMClientOptions,
 ): Promise<CanonicalVideoContentResult> {
   return resolveClient(clientOptions).downloadVideo(options);
+}
+
+export async function generateEmbedding(
+  options: GenerateEmbeddingOptions,
+  clientOptions?: CreateDefaultLLMClientOptions,
+): Promise<CanonicalEmbeddingResult> {
+  return resolveClient(clientOptions).generateEmbedding(options);
 }

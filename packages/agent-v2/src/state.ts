@@ -3,6 +3,8 @@ import type { Message } from "./message.js";
 export type TokenUsage = {
   input: number;
   output: number;
+  total?: number;
+  estimated?: boolean;
 };
 
 export type RunStatus =
@@ -49,7 +51,7 @@ export function initState(params: {
     messages: params.messages,
     workingMemory: params.workingMemory ?? {},
     stepCount: params.stepCount ?? 0,
-    tokenUsage: params.tokenUsage ?? { input: 0, output: 0 },
+    tokenUsage: params.tokenUsage ?? { input: 0, output: 0, total: 0 },
     startedAt: now,
     lastActiveAt: now,
   };
